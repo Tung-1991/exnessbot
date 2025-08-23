@@ -1,2 +1,4 @@
-exnessvenv
+exnessvenv/*
 .env
+logs/*
+/__pycache__/*
