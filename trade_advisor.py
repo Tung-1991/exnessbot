@@ -1,44 +1,50 @@
-from typing import Dict
+import os
+import json
+from datetime import datetime
+from typing import Dict, Tuple, Optional
+from signal_logic import check_signal
 
-ADVISOR_CONFIG = {
+# ==============================================================================
+# =================== ⚙️ TRUNG TÂM CẤU HÌNH & TINH CHỈNH ⚙️ =====================
+# ==============================================================================
+FULL_CONFIG = {
+    "NOTES": "v9.2 - Pure Signal Provider for Advanced Trading Engine",
+    "SCORE_RANGE": 8.0,
     "WEIGHTS": {
-        'tech': 1.0, 
+        'tech': 1.0,
         'context': 0.0,
         'ai': 0.0
     },
-    "DECISION_THRESHOLDS": {
-        "buy": 7.0,
-        "sell": -7.0
-    },
-    "MAX_RAW_SCORES": {
-        "tech": 8.0,
-        "context": 25.0,
-        "ai": 1.0
-    }
 }
 
-def get_advisor_decision(signal_result: Dict) -> Dict:
-    raw_tech_score = signal_result.get("raw_tech_score", 0.0)
-    reason = signal_result.get("reason", "Không có tín hiệu.")
-    raw_context_score = 0.0
-    raw_ai_score = 0.0
-    max_scores = ADVISOR_CONFIG["MAX_RAW_SCORES"]
-    tech_scaled = raw_tech_score / max_scores['tech'] if max_scores['tech'] != 0 else 0.0
-    context_scaled = raw_context_score / max_scores['context'] if max_scores['context'] != 0 else 0.0
-    ai_scaled = raw_ai_score / max_scores['ai'] if max_scores['ai'] != 0 else 0.0
-    weights = ADVISOR_CONFIG["WEIGHTS"]
-    final_rating = (weights['tech'] * tech_scaled) + \
-                   (weights['context'] * context_scaled) + \
-                   (weights['ai'] * ai_scaled)
-    final_score = round(max(-1.0, min(final_rating, 1.0)) * 10, 2)
-    decision_type = "NEUTRAL"
-    thresholds = ADVISOR_CONFIG["DECISION_THRESHOLDS"]
-    if final_score >= thresholds['buy']:
-        decision_type = "BUY"
-    elif final_score <= thresholds['sell']:
-        decision_type = "SELL"
+# ==============================================================================
+# =================== 💻 LOGIC CHƯƠNG TRÌNH 💻 ===================
+# ==============================================================================
+
+def get_advisor_decision(
+    symbol: str, interval: str, indicators: dict, config: dict
+) -> Dict:
+    
+    signal_details = check_signal(indicators)
+    tech_score = signal_details.get("raw_tech_score", 0.0)
+    
+    context_score = 0.0
+    ai_score = 0.0
+
+    weights = config.get('WEIGHTS', {'tech': 1.0, 'context': 0.0, 'ai': 0.0})
+    final_score = (weights['tech'] * tech_score) + \
+                  (weights['context'] * context_score) + \
+                  (weights['ai'] * ai_score)
+    
+    final_score = round(final_score, 2)
+
     return {
-        "decision_type": decision_type,
         "final_score": final_score,
-        "signal_reason": reason
+        "signal_reason": signal_details.get("reason"),
+        "tag": signal_details.get("tag"),
+        "level": signal_details.get("level"),
+        "debug_info": {
+            "weights_used": weights,
+            "tech_component": round(weights['tech'] * tech_score, 2),
+        }
     }
