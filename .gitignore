@@ -2,3 +2,4 @@ exnessvenv/*
 .env
 logs/*
 /__pycache__/*
+livetrade/data/*
