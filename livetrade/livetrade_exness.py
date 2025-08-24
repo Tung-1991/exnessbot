@@ -212,7 +212,7 @@ TACTICS_LAB = {
         "OPTIMAL_ZONE": [LAGGING_ZONE, COINCIDENT_ZONE],
         "NOTES": "Chiến binh SWING TRADE chủ lực. Vào lệnh sớm hơn, gồng lệnh lì đòn qua các đợt điều chỉnh.",
         "WEIGHTS": {'tech': 0.4, 'context': 0.2, 'ai': 0.4},
-        "ENTRY_SCORE": 6.3,                              # [NỚI LỎNG] - Chấp nhận tín hiệu sớm hơn vì hệ thống phòng thủ đã mạnh.
+        "ENTRY_SCORE": 6.5,                              # [NỚI LỎNG] - Chấp nhận tín hiệu sớm hơn vì hệ thống phòng thủ đã mạnh.
         "RR": 1.5,                                       # [TỐI ƯU] - Kỳ vọng RR cao hơn vì vào sớm và gồng được lệnh.
         "ATR_SL_MULTIPLIER": 2.5,                        # [CHỊU ĐÒN] - "Khiên" cực dày, cốt lõi của việc gồng lệnh.
         "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.6, "TRAIL_DISTANCE_RR": 1.2,
@@ -644,7 +644,7 @@ def check_and_manage_open_positions(bnc: BinanceConnector, state: Dict, realtime
                     close_pct = 1.0
                 if close_trade_on_binance(bnc, trade, f"EC_Rel_{last_score:.1f}", state, close_pct=close_pct):
                     trade['partial_closed_by_score'] = True
-                    if close_pct < 1.0: trade['sl'] = trade['entry_price']
+                    #if close_pct < 1.0: trade['sl'] = trade['entry_price']
         _, pnl_percent = get_current_pnl(trade, realtime_price=current_price)
         trade['peak_pnl_percent'] = max(trade.get('peak_pnl_percent', 0.0), pnl_percent)
         initial_risk_dist = abs(trade['initial_entry']['price'] - trade['initial_sl'])

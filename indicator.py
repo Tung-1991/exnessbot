@@ -36,7 +36,7 @@ def calculate_indicators(df: pd.DataFrame, symbol: str, interval: str) -> dict:
         trend = "uptrend"
     elif ema_9 < ema_20:
         trend = "downtrend"
-        
+    
     rsi_series = ta.momentum.rsi(df["close"], window=14)
     rsi_14 = rsi_series.iloc[closed_candle_idx]
     
@@ -102,6 +102,15 @@ def calculate_indicators(df: pd.DataFrame, symbol: str, interval: str) -> dict:
         "breakout_signal": breakout_signal, "open": df["open"].iloc[closed_candle_idx]
     }
     
+    result.update({
+        "high": df["high"].iloc[closed_candle_idx],
+        "low": df["low"].iloc[closed_candle_idx],
+        # Thêm thêm nếu cần cho price action
+        "prev_high": df["high"].iloc[closed_candle_idx - 1] if len(df) > abs(closed_candle_idx - 1) else 0,
+        "prev_low": df["low"].iloc[closed_candle_idx - 1] if len(df) > abs(closed_candle_idx - 1) else 0,
+        "prev_close": df["close"].iloc[closed_candle_idx - 1] if len(df) > abs(closed_candle_idx - 1) else 0,
+    })
+
     for k, v in result.items():
         if isinstance(v, (np.floating, float)) and (np.isnan(v) or np.isinf(v)): result[k] = 0.0
     return result
