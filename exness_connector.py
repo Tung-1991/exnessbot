@@ -93,20 +93,33 @@ class ExnessConnector:
         logger.error(f"❌ Đặt lệnh {symbol} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return None
 
-    def close_position(self, position, comment="ricealert_close"):
+    def close_position(self, position, volume_to_close=None, comment="ricealert_close"):
         if not self._is_connected: return None
+
         order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
         price = mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask
+
+        # Lô-gic cốt lõi được thay đổi ở đây
+        volume = volume_to_close if volume_to_close is not None and volume_to_close > 0 else position.volume
+
         request = {
-            "action": mt5.TRADE_ACTION_DEAL, "symbol": position.symbol, "volume": position.volume,
-            "type": order_type, "position": position.ticket, "price": price, "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": position.symbol,
+            "volume": volume,
+            "type": order_type,
+            "position": position.ticket,
+            "price": price,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_FOK,
         }
+
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info(f"✅ Lệnh đóng cho ticket #{position.ticket} đã được gửi thành công.")
+            print(f"✅ Lệnh đóng {volume} lot cho ticket #{position.ticket} đã được gửi thành công.")
             return result
-        logger.error(f"❌ Đóng lệnh cho ticket #{position.ticket} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
+        
+        print(f"❌ Đóng lệnh cho ticket #{position.ticket} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return None
 
     # --- CÁC HÀM MỚI ĐƯỢC THÊM VÀO ---
