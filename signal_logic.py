@@ -32,7 +32,7 @@ def score_trend(ind: Dict) -> Tuple[float, str]:
     return 0.0, ""
 
 def score_ema200(ind: Dict) -> Tuple[float, str]:
-    p, ema = ind.get("price"), ind.get("ema_200")
+    p, ema = ind.get("closed_candle_price"), ind.get("ema_200")
     if not ema or not p: return 0.0, ""
     return (1.0, "Giá > EMA200") if p > ema else (-1.0, "Giá < EMA200")
 
@@ -62,20 +62,30 @@ def score_cmf(ind: Dict) -> Tuple[float, str]:
     if cmf < -0.05: return -1.0, "Dòng tiền CMF âm"
     return 0.0, ""
 
+# 🟢 Đã sửa: Hàm này giờ đây trả về điểm có hướng dựa trên trend
 def score_adx(ind: Dict) -> Tuple[float, str]:
-    adx = ind.get("adx")
+    adx, trend = ind.get("adx"), ind.get("trend")
     if adx is not None and adx > 25:
-        return 1.0, f"ADX > 25 (Trend mạnh)"
+        if trend == "uptrend":
+            return 1.0, f"ADX > 25 (Trend Tăng Mạnh)"
+        elif trend == "downtrend":
+            return -1.0, f"ADX > 25 (Trend Giảm Mạnh)"
     return 0.0, ""
 
+# 🟢 Đã sửa: Hàm này giờ đây trả về điểm có hướng dựa trên thân nến
 def score_volume(ind: Dict) -> Tuple[float, str]:
     v, vma = ind.get("volume"), ind.get("vol_ma20")
     if not vma: return 0.0, ""
-    if v > 1.8 * vma: return 1.0, "Volume đột biến"
+    if v > 1.8 * vma:
+        closed_price, open_price = ind.get("closed_candle_price"), ind.get("open")
+        if closed_price > open_price:
+            return 1.0, "Volume đột biến (Tăng)"
+        elif closed_price < open_price:
+            return -1.0, "Volume đột biến (Giảm)"
     return 0.0, ""
 
 def score_bb(ind: Dict) -> Tuple[float, str]:
-    p, up, lo = ind.get("price"), ind.get("bb_upper"), ind.get("bb_lower")
+    p, up, lo = ind.get("closed_candle_price"), ind.get("bb_upper"), ind.get("bb_lower")
     if not all([p, up, lo]): return 0.0, ""
     if p < lo: return 1.0, "Giá dưới BB dưới (Mua)"
     if p > up: return -1.0, "Giá trên BB trên (Bán)"
@@ -99,7 +109,7 @@ def score_atr_vol(ind: Dict) -> Tuple[float, str]:
     return 0.0, ""
 
 def score_support_resistance(ind: Dict) -> Tuple[float, str]:
-    p, sup, res = ind.get("price"), ind.get("support_level"), ind.get("resistance_level")
+    p, sup, res = ind.get("closed_candle_price"), ind.get("support_level"), ind.get("resistance_level")
     if not all([p, sup, res]): return 0.0, ""
     if abs(p - sup) / p < 0.015: return 1.0, "Giá gần Hỗ trợ"
     if abs(p - res) / p < 0.015: return -1.0, "Giá gần Kháng cự"
@@ -158,18 +168,14 @@ def check_signal(indicators: dict) -> Dict:
             func_name = func.__name__
             weight = RULE_WEIGHTS.get(func_name, 0.0)
             
-            is_confirmation_signal = func_name in ["score_adx", "score_volume"]
-            if is_confirmation_signal:
-                rule_score = weight # These signals confirm trend, not decide direction
-            else:
-                rule_score = direction * weight
-
+            # 🟢 Đã sửa: Bỏ logic cũ, giờ đây direction sẽ quyết định hướng điểm số
+            rule_score = direction * weight
             total_score += rule_score
             reasons.append(f"{reason_text} ({rule_score:+.1f})")
     
     final_score = max(CLAMP_MIN_SCORE, min(total_score, CLAMP_MAX_SCORE))
     
-    level, tag = _map_level_tag(final_score, indicators.get("rsi_1h", 50.0))
+    level, tag = _map_level_tag(final_score, indicators.get("rsi_14", 50.0))
     final_reason = f"Tổng điểm: {final_score:.1f} | " + " ".join(reasons) if reasons else "Không có tín hiệu rõ ràng."
 
     return {

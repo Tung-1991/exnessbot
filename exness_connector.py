@@ -99,7 +99,6 @@ class ExnessConnector:
         order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
         price = mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask
 
-        # Lô-gic cốt lõi được thay đổi ở đây
         volume = volume_to_close if volume_to_close is not None and volume_to_close > 0 else position.volume
 
         request = {
@@ -118,7 +117,7 @@ class ExnessConnector:
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
             print(f"✅ Lệnh đóng {volume} lot cho ticket #{position.ticket} đã được gửi thành công.")
             return result
-        
+            
         print(f"❌ Đóng lệnh cho ticket #{position.ticket} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return None
 
@@ -130,9 +129,14 @@ class ExnessConnector:
 
     def calculate_loss(self, symbol, order_type, volume, entry_price, sl_price):
         if not self._is_connected: return None
-        # MT5 tính loss là một số âm, nên ta lấy giá trị tuyệt đối
         loss = mt5.order_calc_loss(order_type, symbol, volume, entry_price, sl_price)
         return abs(loss) if loss is not None else None
+
+    # [BỔ SUNG] Thêm hàm calculate_profit còn thiếu
+    def calculate_profit(self, symbol, order_type, volume, entry_price, current_price):
+        if not self._is_connected: return None
+        profit = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY if order_type == "LONG" else mt5.ORDER_TYPE_SELL, symbol, volume, entry_price, current_price)
+        return profit if profit is not None else None
 
     def modify_position(self, ticket_id, sl_price, tp_price):
         if not self._is_connected: return None
