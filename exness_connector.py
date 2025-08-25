@@ -1,12 +1,19 @@
+# -*- coding: utf-8 -*-
 # exness_connector.py
+# Version: 1.1.0 - Upgraded
+# Date: 2025-08-25
+"""
+CHANGELOG (v1.1.0):
+- REFACTOR (calculate_lot_size): Hàm giờ đây yêu cầu `order_type` làm tham số đầu vào trực tiếp, giúp logic rõ ràng và tránh suy luận ngầm.
+- REFACTOR (place_order): Thêm tham số `comment` để linh hoạt hơn, không còn hardcode comment trong hàm.
+- ENHANCEMENT (Logging): Cải thiện các thông báo log để chi tiết và hữu ích hơn trong việc gỡ lỗi.
+- ENHANCEMENT (Type Hinting): Thêm các gợi ý kiểu dữ liệu (type hints) để mã nguồn dễ đọc và bảo trì hơn.
+"""
 
 import MetaTrader5 as mt5
-import os
 import pandas as pd
-import time
 import logging
-from datetime import datetime
-from dotenv import load_dotenv
+from typing import Optional, Dict, List
 
 # Lấy logger được cấu hình bởi file chính, nếu không có thì tạo logger cơ bản
 logger = logging.getLogger("ExnessBot")
@@ -14,17 +21,19 @@ if not logger.hasHandlers():
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] - %(message)s")
 
 class ExnessConnector:
+    """
+    Lớp quản lý kết nối và tương tác với terminal MetaTrader 5.
+    """
     def __init__(self):
-        load_dotenv()
-        self._is_connected = False
-        self._timeframe_mapping = {
+        self._is_connected: bool = False
+        self._timeframe_mapping: Dict[str, int] = {
             '1m': mt5.TIMEFRAME_M1, '5m': mt5.TIMEFRAME_M5, '15m': mt5.TIMEFRAME_M15,
             '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
             '1d': mt5.TIMEFRAME_D1,
         }
-        logger.info("Exness Connector khởi tạo. Sẵn sàng kết nối tới terminal MT5 đang chạy...")
+        logger.info("Exness Connector v1.1.0 khởi tạo. Sẵn sàng kết nối...")
 
-    def connect(self):
+    def connect(self) -> bool:
         if self._is_connected:
             return True
         logger.info("Đang tìm và kết nối tới terminal MetaTrader 5...")
@@ -50,12 +59,12 @@ class ExnessConnector:
             mt5.shutdown()
             self._is_connected = False
 
-    def get_account_info(self):
+    def get_account_info(self) -> Optional[Dict]:
         if not self._is_connected: return None
         info = mt5.account_info()
         return info._asdict() if info else None
 
-    def get_historical_data(self, symbol, timeframe, count):
+    def get_historical_data(self, symbol: str, timeframe: str, count: int) -> Optional[pd.DataFrame]:
         if not self._is_connected: return None
         mt5_timeframe = self._timeframe_mapping.get(timeframe)
         if not mt5_timeframe:
@@ -75,12 +84,12 @@ class ExnessConnector:
             logger.error(f"Lỗi ngoại lệ khi lấy dữ liệu lịch sử cho {symbol}: {e}", exc_info=True)
             return None
 
-    def get_all_open_positions(self):
+    def get_all_open_positions(self) -> List:
         if not self._is_connected: return []
         positions = mt5.positions_get()
         return positions if positions else []
 
-    def place_order(self, symbol, order_type, lot_size, sl_price, tp_price, magic_number=202508):
+    def place_order(self, symbol: str, order_type: int, lot_size: float, sl_price: float, tp_price: float, magic_number: int, comment: str) -> Optional[mt5.TradeResult]:
         if not self._is_connected: return None
         tick = mt5.symbol_info_tick(symbol)
         if not tick:
@@ -90,17 +99,17 @@ class ExnessConnector:
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": lot_size,
             "type": order_type, "price": price, "sl": sl_price, "tp": tp_price,
-            "magic": magic_number, "comment": "exness_bot_v2",
+            "magic": magic_number, "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
         }
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info(f"✅ Lệnh {symbol} đã được đặt thành công. Ticket: {result.order}")
+            logger.info(f"✅ Lệnh {symbol} đã được đặt thành công. Ticket: {result.order}, Comment: '{comment}'")
             return result
-        logger.error(f"❌ Đặt lệnh {symbol} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
+        logger.error(f"❌ Đặt lệnh {symbol} thất bại. Retcode: {result.retcode if result else 'N/A'}, Comment: '{result.comment if result else 'N/A'}' Error: {mt5.last_error()}")
         return None
 
-    def close_position(self, position, volume_to_close=None, comment="exness_bot_close"):
+    def close_position(self, position, volume_to_close: Optional[float] = None, comment: str = "exness_bot_close") -> Optional[mt5.TradeResult]:
         if not self._is_connected: return None
         tick = mt5.symbol_info_tick(position.symbol)
         if not tick:
@@ -116,13 +125,13 @@ class ExnessConnector:
         }
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info(f"✅ Lệnh đóng {volume} lot cho ticket #{position.ticket} đã được gửi thành công.")
+            logger.info(f"✅ Lệnh đóng {volume:.2f} lot cho ticket #{position.ticket} đã được gửi thành công.")
             return result
         logger.error(f"❌ Đóng lệnh cho ticket #{position.ticket} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return None
 
-    def modify_position(self, ticket_id, sl_price, tp_price):
-        if not self._is_connected: return None
+    def modify_position(self, ticket_id: int, sl_price: float, tp_price: float) -> bool:
+        if not self._is_connected: return False
         request = {
             "action": mt5.TRADE_ACTION_SLTP, "position": ticket_id,
             "sl": float(sl_price), "tp": float(tp_price),
@@ -134,14 +143,16 @@ class ExnessConnector:
         logger.error(f"Sửa lệnh #{ticket_id} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return False
 
-    def calculate_profit(self, symbol, order_type, volume, entry_price, current_price):
+    def calculate_profit(self, symbol: str, order_type_str: str, volume: float, entry_price: float, current_price: float) -> Optional[float]:
         if not self._is_connected: return None
-        mt5_order_type = mt5.ORDER_TYPE_BUY if order_type == "LONG" else mt5.ORDER_TYPE_SELL
+        mt5_order_type = mt5.ORDER_TYPE_BUY if order_type_str == "LONG" else mt5.ORDER_TYPE_SELL
         profit = mt5.order_calc_profit(mt5_order_type, symbol, volume, entry_price, current_price)
-        return profit if profit is not None else None
+        return profit
 
-    def calculate_lot_size(self, symbol, risk_amount_usd, sl_price):
-        """Tính toán lot size chính xác dựa trên số tiền rủi ro và khoảng cách stop loss."""
+    def calculate_lot_size(self, symbol: str, risk_amount_usd: float, sl_price: float, order_type: int) -> Optional[float]:
+        """
+        Tính toán lot size chính xác dựa trên số tiền rủi ro, khoảng cách stop loss và loại lệnh.
+        """
         if not self._is_connected: return None
         try:
             symbol_info = mt5.symbol_info(symbol)
@@ -154,21 +165,17 @@ class ExnessConnector:
                 logger.error(f"Không thể lấy giá tick của {symbol}")
                 return None
             
-            # Sử dụng giá ASK cho lệnh BUY, giá BID cho lệnh SELL để tính toán
-            entry_price = tick.ask 
-            order_type = mt5.ORDER_TYPE_BUY
-            if sl_price > entry_price: # Nếu SL > giá vào lệnh, đây là lệnh SELL
-                 entry_price = tick.bid
-                 order_type = mt5.ORDER_TYPE_SELL
+            # **CẢI TIẾN:** Sử dụng trực tiếp `order_type` để lấy giá vào lệnh chính xác
+            entry_price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
 
-            if abs(entry_price - sl_price) == 0:
-                logger.error(f"Giá vào lệnh và giá SL bằng nhau cho {symbol}")
+            if abs(entry_price - sl_price) < symbol_info.point * 2: # Kiểm tra khoảng cách tối thiểu
+                logger.error(f"Khoảng cách giữa giá vào lệnh và SL quá nhỏ cho {symbol}")
                 return None
 
             # Tính toán mức lỗ cho 1.0 lot dựa trên hàm của MT5 (chính xác nhất)
             loss_per_lot = mt5.order_calc_loss(order_type, symbol, 1.0, entry_price, sl_price)
             if loss_per_lot is None or loss_per_lot <= 0:
-                logger.error(f"Không thể tính toán mức lỗ cho 1 lot của {symbol}.")
+                logger.error(f"Không thể tính toán mức lỗ cho 1 lot của {symbol}. Có thể do SL quá gần.")
                 return None
 
             # Tính lot size thô
@@ -177,8 +184,9 @@ class ExnessConnector:
             # Làm tròn và kiểm tra các giới hạn của sàn
             min_vol, max_vol, vol_step = symbol_info.volume_min, symbol_info.volume_max, symbol_info.volume_step
             
-            lot_size = round(lot_size / vol_step) * vol_step # Làm tròn theo bước khối lượng
-            lot_size = round(lot_size, 2) # Làm tròn tới 2 chữ số thập phân
+            # Làm tròn lot size theo bước khối lượng của sàn
+            lot_size = round(lot_size / vol_step) * vol_step
+            lot_size = round(lot_size, 2) # Làm tròn tới 2 chữ số thập phân cho chắc chắn
 
             if lot_size < min_vol:
                 logger.warning(f"Lot size tính toán ({lot_size}) < mức tối thiểu ({min_vol}). Sử dụng mức tối thiểu.")
@@ -187,41 +195,8 @@ class ExnessConnector:
                 logger.warning(f"Lot size tính toán ({lot_size}) > mức tối đa ({max_vol}). Sử dụng mức tối đa.")
                 return max_vol
             
-            logger.debug(f"Tính toán lot size cho {symbol}: {lot_size} (Rủi ro: ${risk_amount_usd})")
+            logger.debug(f"Tính toán lot size cho {symbol}: {lot_size:.2f} (Rủi ro: ${risk_amount_usd:.2f})")
             return lot_size
         except Exception as e:
             logger.error(f"Lỗi ngoại lệ khi tính lot size cho {symbol}: {e}", exc_info=True)
             return None
-
-
-if __name__ == "__main__":
-    connector = ExnessConnector()
-    if connector.connect():
-        SYMBOL = "BTCUSD"
-        
-        # --- Thử nghiệm tính toán Lot Size ---
-        logger.info(f"\n--- Thử nghiệm tính toán Lot Size cho {SYMBOL} ---")
-        risk_demo = 20  # Muốn rủi ro $20
-        tick = mt5.symbol_info_tick(SYMBOL)
-        if tick:
-            current_price = tick.ask
-            sl_price_demo = current_price - 1000 # SL cách 1000 giá
-            calculated_lot = connector.calculate_lot_size(SYMBOL, risk_demo, sl_price_demo)
-            if calculated_lot:
-                logger.info(f"Để rủi ro ${risk_demo} với SL tại {sl_price_demo:.2f}, cần vào lệnh {calculated_lot} lot.")
-
-                # --- Thử nghiệm đặt lệnh với lot size đã tính ---
-                logger.info(f"\n--- Thử nghiệm đặt lệnh {calculated_lot} lot {SYMBOL} ---")
-                tp_price_demo = current_price + 2000
-                buy_result = connector.place_order(SYMBOL, mt5.ORDER_TYPE_BUY, calculated_lot, sl_price_demo, tp_price_demo)
-                if buy_result:
-                    time.sleep(5)
-                    positions = connector.get_all_open_positions()
-                    found_position = next((p for p in positions if p.ticket == buy_result.order), None)
-                    if found_position:
-                        logger.info(f"--- Tìm thấy vị thế (Ticket: {found_position.ticket}). Thử nghiệm đóng lệnh ---")
-                        connector.close_position(found_position)
-        else:
-            logger.error("Không thể lấy giá tick hiện tại để thử nghiệm.")
-        
-        connector.shutdown()
