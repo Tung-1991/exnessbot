@@ -9,6 +9,8 @@ CHANGELOG (v1.1.0):
 - ENHANCEMENT (Logging): Cải thiện các thông báo log để chi tiết và hữu ích hơn trong việc gỡ lỗi.
 - ENHANCEMENT (Type Hinting): Thêm các gợi ý kiểu dữ liệu (type hints) để mã nguồn dễ đọc và bảo trì hơn.
 """
+# THÊM DÒNG NÀY ĐỂ KHẮC PHỤC LỖI TYPING
+from __future__ import annotations
 
 import MetaTrader5 as mt5
 import pandas as pd
