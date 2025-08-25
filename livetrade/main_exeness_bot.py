@@ -60,17 +60,6 @@ logger = logging.getLogger("ExnessBot")
 # ==================== ⚙️ TRUNG TÂM CẤU HÌNH (UPGRADED) ⚙️ =====================
 # ==============================================================================
 
-Xin lỗi bạn và cảm ơn bạn đã chỉ ra. Tôi đã hiểu sai ý và bỏ sót một vài tham số. Việc đặt chú thích ngay bên cạnh dòng mã sẽ giúp theo dõi trực quan hơn rất nhiều.
-
-Tôi đã làm lại toàn bộ phần cấu hình theo đúng yêu cầu của bạn: chú thích đầy đủ cho tất cả các dòng và đặt chú thích ở bên phải của từng dòng.
-
-Mã nguồn đã được chú thích lại đầy đủ và đúng định dạng
-Python
-
-# ==============================================================================
-# ==================== ⚙️ TRUNG TÂM CẤU HÌNH (UPGRADED) ⚙️ =====================
-# ==============================================================================
-
 GENERAL_CONFIG = {
     "SYMBOLS_TO_SCAN": [s.strip() for s in os.getenv("SYMBOLS_TO_SCAN", "BTCUSD,ETHUSD").split(',')], # Danh sách các cặp tiền tệ cần quét, đọc từ file .env hoặc mặc định
     "MAIN_TIMEFRAME": "5m",                                                  # Khung thời gian chính để bot phân tích và ra quyết định
