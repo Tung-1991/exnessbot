@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 # main_exness_bot.py
-# Version: 2.3.0 - The Silent Operator
-# Date: 2025-08-28
+# Version: 2.4.0 - The Guardian
+# Date: 2025-08-25
 """
-CHANGELOG (v2.3.0):
-- REFACTOR (Silent Operation): Loại bỏ toàn bộ thông báo sự kiện tức thời (mở/đóng lệnh).
-- FEATURE (Consolidated Reporting): Gộp tất cả sự kiện vào Báo cáo Động duy nhất, tuân thủ cooldown nghiêm ngặt.
-- REFACTOR (Smart Cooldown Logic): Cải tiến logic cooldown để linh hoạt và dễ cấu hình hơn.
+CHANGELOG (v2.4.0):
+- FEATURE (Daily Loss Limit): Thêm "cầu dao tự động", bot sẽ ngừng mở lệnh mới trong ngày nếu chạm ngưỡng thua lỗ đã định.
+- FEATURE (Directional Trade Limit): Giới hạn số lượng lệnh tối đa được mở cùng một hướng (Long/Short) để tránh rủi ro tập trung.
+- FEATURE (Session-Based Risk): Tự động điều chỉnh % rủi ro/lệnh dựa trên phiên giao dịch (giảm rủi ro trong phiên Á yên tĩnh).
+- REFACTOR (State Management): Cải tiến state để theo dõi PnL trong ngày.
 """
 
 import os
@@ -60,135 +61,144 @@ logger = logging.getLogger("ExnessBot")
 # ==================== ⚙️ TRUNG TÂM CẤU HÌNH (UPGRADED) ⚙️ =====================
 # ==============================================================================
 
+# <<< NEW >>> CẤU HÌNH RỦI RO THEO PHIÊN GIAO DỊCH
+SESSION_RISK_CONFIG = {
+    "ENABLED": True,
+    # Giờ VN (GMT+7). Phiên Á thường yên tĩnh từ khoảng 2h sáng đến 8h sáng.
+    "QUIET_HOURS": {"START": 2, "END": 8, "MULTIPLIER": 0.7}, # Giảm rủi ro còn 70%
+    # Phiên Âu/Mỹ sôi động, có thể tăng nhẹ rủi ro
+    "ACTIVE_HOURS": {"START": 14, "END": 23, "MULTIPLIER": 1.1} # Tăng rủi ro lên 110%
+}
+
 GENERAL_CONFIG = {
-    "SYMBOLS_TO_SCAN": [s.strip() for s in os.getenv("SYMBOLS_TO_SCAN", "BTCUSD,ETHUSD").split(',')], # Danh sách các cặp tiền tệ cần quét, đọc từ file .env hoặc mặc định
-    "MAIN_TIMEFRAME": "5m",                                                  # Khung thời gian chính để bot phân tích và ra quyết định
-    "MTF_TIMEFRAMES": ["5m", "15m", "1h"],                                   # Các khung thời gian phụ để phân tích đa khung thời gian (Multi-Timeframe Analysis)
-    "LOOP_SLEEP_SECONDS": 2,                                                 # Thời gian (giây) tạm dừng giữa mỗi vòng lặp chính để giảm tải CPU
-    "HEAVY_TASK_INTERVAL_MINUTES": 5,                                        # Chu kỳ (phút) chạy các tác vụ nặng (quét lệnh mới, cập nhật chỉ báo)
-    "RECONCILIATION_INTERVAL_MINUTES": 15,                                   # Chu kỳ (phút) đối soát vị thế với sàn để phát hiện lệnh bị đóng thủ công
-    "CANDLE_FETCH_COUNT": 300,                                               # Số lượng nến lịch sử cần tải về cho mỗi lần quét
-    "TOP_N_OPPORTUNITIES_TO_CHECK": 5,                                       # Chỉ xem xét N cơ hội có điểm cao nhất để tiết kiệm thời gian
-    "TRADE_COOLDOWN_HOURS": 1.0,                                             # Thời gian (giờ) chờ sau khi đóng một lệnh trên một cặp tiền
-    "OVERRIDE_COOLDOWN_SCORE": 7.5,                                          # Điểm số tối thiểu để bot bỏ qua thời gian cooldown khi có tín hiệu cực mạnh
-    "MAGIC_NUMBER": 202508,                                                  # Mã số định danh các lệnh của bot trên MT5 (phân biệt với lệnh thủ công)
-    "DAILY_SUMMARY_TIMES": ["08:10", "20:10"],                               # Các mốc thời gian (HH:MM) để gửi báo cáo tổng kết hàng ngày
-    "MIN_RAW_SCORE_THRESHOLD": 4.0,                                          # Ngưỡng điểm thô tối thiểu để một cơ hội được xem xét
-    "CRITICAL_ERROR_COOLDOWN_MINUTES": 60,                                   # Thời gian (phút) chờ sau khi gửi thông báo lỗi nghiêm trọng để tránh spam
+    "SYMBOLS_TO_SCAN": [s.strip() for s in os.getenv("SYMBOLS_TO_SCAN", "BTCUSD,ETHUSD").split(',')],
+    "MAIN_TIMEFRAME": "5m",
+    "MTF_TIMEFRAMES": ["5m", "15m", "1h"],
+    "LOOP_SLEEP_SECONDS": 2,
+    "HEAVY_TASK_INTERVAL_MINUTES": 5,
+    "RECONCILIATION_INTERVAL_MINUTES": 15,
+    "CANDLE_FETCH_COUNT": 300,
+    "TOP_N_OPPORTUNITIES_TO_CHECK": 5,
+    "TRADE_COOLDOWN_HOURS": 1.0,
+    "OVERRIDE_COOLDOWN_SCORE": 7.5,
+    "MAGIC_NUMBER": 202508,
+    "DAILY_SUMMARY_TIMES": ["08:10", "20:10"],
+    "MIN_RAW_SCORE_THRESHOLD": 4.0,
+    "CRITICAL_ERROR_COOLDOWN_MINUTES": 60,
 }
 
 DYNAMIC_ALERT_CONFIG = {
-    "ENABLED": True,                                                         # Bật/tắt toàn bộ tính năng báo cáo động (cập nhật trạng thái)
-    "ALERT_COOLDOWN_MINUTES": 240,                                           # Thời gian (phút) chờ giữa các báo cáo động
-    "PNL_CHANGE_THRESHOLD_PCT": 2.5,                                         # Ngưỡng thay đổi PnL (%) để kích hoạt báo cáo động
-    "FORCE_UPDATE_MULTIPLIER": 2.5,                                          # Hệ số nhân để buộc cập nhật nếu quá thời gian cooldown (ví dụ: 240 * 2.5 = 600 phút)
+    "ENABLED": True,
+    "ALERT_COOLDOWN_MINUTES": 240,
+    "PNL_CHANGE_THRESHOLD_PCT": 2.5,
+    "FORCE_UPDATE_MULTIPLIER": 2.5,
 }
 
 MOMENTUM_FILTER_CONFIG = {
-    "ENABLED": True,                                                         # Bật/tắt bộ lọc xác nhận động lượng
-    "RULES_BY_TIMEFRAME": {                                                  # Quy tắc lọc theo khung thời gian ('WINDOW': số nến kiểm tra, 'REQUIRED_CANDLES': số nến đạt chuẩn)
-        "5m": {"WINDOW": 5, "REQUIRED_CANDLES": 3},
-        "15m": {"WINDOW": 5, "REQUIRED_CANDLES": 2},
-        "1h": {"WINDOW": 4, "REQUIRED_CANDLES": 1}
+    "ENABLED": True,
+    "RULES_BY_TIMEFRAME": {
+        "5m": {"WINDOW": 4, "REQUIRED_CANDLES": 2},
+        "15m": {"WINDOW": 4, "REQUIRED_CANDLES": 2},
+        "1h": {"WINDOW": 3, "REQUIRED_CANDLES": 1}
     }
 }
 
 CAPITAL_MANAGEMENT_CONFIG = {
-    "ENABLED": True,                                                         # Bật/tắt tính năng quản lý vốn tự động
-    "AUTO_COMPOUND_THRESHOLD_PCT": 10.0,                                     # Ngưỡng tăng trưởng (%) để bot tự động tính lãi kép (cập nhật vốn nền tảng)
-    "AUTO_DELEVERAGE_THRESHOLD_PCT": -10.0,                                  # Ngưỡng thua lỗ (%) để bot tự động giảm rủi ro (cập nhật vốn nền tảng)
-    "CAPITAL_ADJUSTMENT_COOLDOWN_HOURS": 48,                                 # Thời gian (giờ) chờ giữa các lần điều chỉnh vốn tự động
-    "DEPOSIT_DETECTION_MIN_USD": 20.0,                                       # Ngưỡng nạp/rút tối thiểu (USD) để bot nhận biết
-    "DEPOSIT_DETECTION_THRESHOLD_PCT": 0.02,                                 # Ngưỡng nạp/rút tối thiểu (phần trăm vốn) để bot nhận biết
+    "ENABLED": True,
+    "AUTO_COMPOUND_THRESHOLD_PCT": 10.0,
+    "AUTO_DELEVERAGE_THRESHOLD_PCT": -10.0,
+    "CAPITAL_ADJUSTMENT_COOLDOWN_HOURS": 48,
+    "DEPOSIT_DETECTION_MIN_USD": 20.0,
+    "DEPOSIT_DETECTION_THRESHOLD_PCT": 0.02,
 }
 
 MTF_ANALYSIS_CONFIG = {
-    "ENABLED": True,                                                         # Bật/tắt phân tích đa khung thời gian
-    "BONUS_COEFFICIENT": 1.05,                                               # Hệ số thưởng khi xu hướng khung lớn trùng với khung nhỏ
-    "PENALTY_COEFFICIENT": 0.95,                                             # Hệ số phạt khi xu hướng khung lớn ngược với khung nhỏ
-    "SEVERE_PENALTY_COEFFICIENT": 0.85,                                      # Hệ số phạt nặng khi các khung lớn đều ngược xu hướng
-    "SIDEWAYS_PENALTY_COEFFICIENT": 0.97,                                    # Hệ số phạt khi khung lớn đi ngang (sideways)
+    "ENABLED": True,
+    "BONUS_COEFFICIENT": 1.08,
+    "PENALTY_COEFFICIENT": 0.95,
+    "SEVERE_PENALTY_COEFFICIENT": 0.93,
+    "SIDEWAYS_PENALTY_COEFFICIENT": 0.97,
 }
 
 EXTREME_ZONE_ADJUSTMENT_CONFIG = {
-    "ENABLED": True,                                                         # Bật/tắt việc điều chỉnh điểm số dựa trên vùng cực đoan (quá mua/quá bán)
-    "MAX_BONUS_COEFF": 1.10, "MIN_PENALTY_COEFF": 0.90,                       # Hệ số điều chỉnh điểm số tối đa và tối thiểu
-    "SCORING_WEIGHTS": { "RSI": 0.4, "BB_POS": 0.4, "CANDLE": 0.35, "SR_LEVEL": 0.35 }, # Trọng số của các yếu tố khi tính điểm vùng cực đoan
-    "BASE_IMPACT": { "BONUS_PER_POINT": 0.07, "PENALTY_PER_POINT": -0.08 },   # Mức độ tác động cơ bản lên hệ số điều chỉnh
-    "CONFLUENCE_MULTIPLIER": 1.6,                                            # Hệ số nhân khi có nhiều yếu tố cùng xác nhận
-    "RULES_BY_TIMEFRAME": {                                                  # Ngưỡng RSI và Bollinger Bands để xác định vùng cực đoan
-        "5m": {"OVERBOUGHT": {"RSI_ABOVE": 75, "BB_POS_ABOVE": 0.98}, "OVERSOLD": {"RSI_BELOW": 25, "BB_POS_BELOW": 0.05}},
-        "15m": {"OVERBOUGHT": {"RSI_ABOVE": 73, "BB_POS_ABOVE": 0.95}, "OVERSOLD": {"RSI_BELOW": 27, "BB_POS_BELOW": 0.08}},
-        "1h": {"OVERBOUGHT": {"RSI_ABOVE": 72, "BB_POS_ABOVE": 0.95}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.10}}
+    "ENABLED": True,
+    "MAX_BONUS_COEFF": 1.12, "MIN_PENALTY_COEFF": 0.94,
+    "SCORING_WEIGHTS": { "RSI": 0.4, "BB_POS": 0.4, "CANDLE": 0.35, "SR_LEVEL": 0.35 },
+    "BASE_IMPACT": { "BONUS_PER_POINT": 0.08, "PENALTY_PER_POINT": -0.06 },
+    "CONFLUENCE_MULTIPLIER": 1.4,
+    "RULES_BY_TIMEFRAME": {
+        "5m": {"OVERBOUGHT": {"RSI_ABOVE": 72, "BB_POS_ABOVE": 0.95}, "OVERSOLD": {"RSI_BELOW": 28, "BB_POS_BELOW": 0.05}},
+        "15m": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.93}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.07}},
+        "1h": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.92}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.08}}
     },
-    "CONFIRMATION_BOOST": {                                                  # Cấu hình thưởng điểm từ nến xác nhận và mức cản
-        "ENABLED": True,                                                     # Bật/tắt thưởng điểm xác nhận
-        "BEARISH_CANDLES": ["shooting_star", "bearish_engulfing", "gravestone"], # Danh sách các mẫu nến giảm giá xác nhận
-        "BULLISH_CANDLES": ["hammer", "bullish_engulfing", "dragonfly"],     # Danh sách các mẫu nến tăng giá xác nhận
-        "RESISTANCE_PROXIMITY_PCT": 0.005, "SUPPORT_PROXIMITY_PCT": 0.005,    # Ngưỡng gần kháng cự/hỗ trợ (%) để được tính điểm
+    "CONFIRMATION_BOOST": {
+        "ENABLED": True,
+        "BEARISH_CANDLES": ["shooting_star", "bearish_engulfing", "gravestone"],
+        "BULLISH_CANDLES": ["hammer", "bullish_engulfing", "dragonfly"],
+        "RESISTANCE_PROXIMITY_PCT": 0.007, "SUPPORT_PROXIMITY_PCT": 0.007,
     }
 }
 
 ACTIVE_TRADE_MANAGEMENT_CONFIG = {
-    "EARLY_CLOSE_ABS_THRESHOLD_L": 4.5, "EARLY_CLOSE_ABS_THRESHOLD_S": -4.5,   # Ngưỡng điểm số tuyệt đối để đóng lệnh sớm (L: Long, S: Short)
-    "EARLY_CLOSE_REL_DROP_PCT": 0.30,                                        # Ngưỡng sụt giảm điểm tương đối (%) để đóng lệnh sớm một phần
-    "PARTIAL_EARLY_CLOSE_PCT": 0.5,                                          # Tỷ lệ khối lượng (%) sẽ đóng khi tín hiệu suy yếu
-    "PROFIT_PROTECTION": {                                                   # Cấu hình bảo vệ lợi nhuận khi giá quay đầu
-        "ENABLED": True,                                                     # Bật/tắt tính năng bảo vệ lợi nhuận
-        "MIN_PEAK_PNL_TRIGGER": 2.5,                                         # Mức PnL đỉnh tối thiểu (%) để kích hoạt
-        "PNL_DROP_TRIGGER_PCT": 1.0,                                         # Mức sụt giảm PnL (%) từ đỉnh để kích hoạt chốt lời
-        "PARTIAL_CLOSE_PCT": 0.5                                             # Tỷ lệ khối lượng (%) sẽ đóng để bảo vệ lợi nhuận
+    "EARLY_CLOSE_ABS_THRESHOLD_L": 3.8, "EARLY_CLOSE_ABS_THRESHOLD_S": -3.8,
+    "EARLY_CLOSE_REL_DROP_PCT": 0.35,
+    "PARTIAL_EARLY_CLOSE_PCT": 0.5,
+    "PROFIT_PROTECTION": {
+        "ENABLED": True,
+        "MIN_PEAK_PNL_TRIGGER": 2.0,
+        "PNL_DROP_TRIGGER_PCT": 0.8,
+        "PARTIAL_CLOSE_PCT": 0.5
     },
-    "SMART_TSL": {                                                           # Cấu hình Trailing Stop Loss (TSL) thông minh
-        "ENABLED": True,                                                     # Bật/tắt TSL thông minh
-        "ATR_REDUCTION_FACTOR": 0.8                                          # Yêu cầu ATR hiện tại phải nhỏ hơn ATR lúc vào lệnh * hệ số này
+    "SMART_TSL": {
+        "ENABLED": True,
+        "ATR_REDUCTION_FACTOR": 0.75
     }
 }
 
 RISK_RULES_CONFIG = {
-    "RISK_PER_TRADE_PERCENT": 1.0,                                           # Rủi ro tối đa cho mỗi lệnh (tính theo % vốn)
-    "MAX_ACTIVE_TRADES": 5,                                                  # Số lệnh tối đa được phép mở cùng lúc
-    "MAX_TOTAL_RISK_EXPOSURE_PERCENT": 10.0,                                 # Tổng rủi ro tối đa của tất cả các lệnh đang mở (tính theo % vốn)
-    "OPEN_TRADE_RETRY_LIMIT": 3,                                             # Số lần thử lại tối đa khi đặt lệnh
-    "CLOSE_TRADE_RETRY_LIMIT": 3,                                            # Số lần thử lại tối đa khi đóng lệnh
-    "RETRY_DELAY_SECONDS": 5,                                                # Thời gian (giây) chờ giữa các lần thử lại
-    "STALE_TRADE_RULES": {                                                   # Quy tắc xử lý các lệnh "bị ứ đọng" (quá lâu không có tiến triển)
-        "5m": {"HOURS": 8, "PROGRESS_THRESHOLD_PCT": 1.0},                   # Điều kiện cho khung 5m: giữ quá 8 giờ và PnL < 1%
-        "STAY_OF_EXECUTION_SCORE_L": 6.0,                                    # Điểm số Long tối thiểu để lệnh được "ân xá"
-        "STAY_OF_EXECUTION_SCORE_S": -6.0                                    # Điểm số Short tối thiểu để lệnh được "ân xá"
+    "RISK_PER_TRADE_PERCENT": 1.0,
+    "MAX_ACTIVE_TRADES": 5,
+    "MAX_TOTAL_RISK_EXPOSURE_PERCENT": 10.0,
+    "OPEN_TRADE_RETRY_LIMIT": 3,
+    "CLOSE_TRADE_RETRY_LIMIT": 3,
+    "RETRY_DELAY_SECONDS": 5,
+    # <<< NEW >>> CÁC QUY TẮC BẢO VỆ MỚI
+    "DAILY_LOSS_LIMIT_PERCENT": -3.0,   # Ngừng giao dịch nếu lỗ trong ngày chạm -3% vốn
+    "MAX_TRADES_PER_DIRECTION": 2,      # Tối đa 2 lệnh Long hoặc 2 lệnh Short cùng lúc
+    "STALE_TRADE_RULES": {
+        "5m": {"HOURS": 8, "PROGRESS_THRESHOLD_PCT": 1.0},
+        "STAY_OF_EXECUTION_SCORE_L": 6.0,
+        "STAY_OF_EXECUTION_SCORE_S": -6.0
     }
 }
 
 DCA_CONFIG = {
-    "ENABLED": True, "MAX_DCA_ENTRIES": 2,                                   # Bật/tắt tính năng Trung bình giá (DCA) và số lần DCA tối đa
-    "STRATEGY": "aggressive",                                                # Chiến lược DCA: 'aggressive' (gấp thếp) hoặc 'conservative' (khiêm tốn)
-    "MULTIPLIERS": {                                                         # Hệ số nhân lot size cho mỗi lần DCA
+    "ENABLED": True, "MAX_DCA_ENTRIES": 2,
+    "STRATEGY": "aggressive",
+    "MULTIPLIERS": {
         "aggressive": 1.5,
         "conservative": 0.75
     },
-    "TRIGGER_DROP_PCT_BY_TIMEFRAME": {"5m": -3.0, "15m": -4.0, "1h": -5.0},   # Ngưỡng sụt giảm giá (%) để kích hoạt DCA
-    "SCORE_MIN_THRESHOLD_LONG": 6.5, "SCORE_MIN_THRESHOLD_SHORT": -6.5,       # Ngưỡng điểm tối thiểu để được phép DCA
-    "DCA_COOLDOWN_HOURS": 4                                                  # Thời gian (giờ) chờ giữa các lần DCA cho cùng một lệnh
+    "TRIGGER_DROP_PCT_BY_TIMEFRAME": {"5m": -3.0, "15m": -4.0, "1h": -5.0},
+    "SCORE_MIN_THRESHOLD_LONG": 5.5, "SCORE_MIN_THRESHOLD_SHORT": -5.5,
+    "DCA_COOLDOWN_HOURS": 4
 }
 
 DISCORD_CONFIG = {
-    "WEBHOOK_URL": os.getenv("DISCORD_EXNESS_WEBHOOK"),                      # URL Webhook để gửi thông báo Discord (lấy từ file .env)
-    "CHUNK_DELAY_SECONDS": 2                                                 # Thời gian (giây) chờ giữa các chunk khi gửi tin nhắn dài
+    "WEBHOOK_URL": os.getenv("DISCORD_EXNESS_WEBHOOK"),
+    "CHUNK_DELAY_SECONDS": 2
 }
 
-# Cấu hình cho file log
-LOG_FILE_MAX_BYTES = 5 * 1024 * 1024                                         # Kích thước tối đa của một file log (5MB)
-LOG_FILE_BACKUP_COUNT = 3                                                    # Số lượng file log backup được giữ lại
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT = 3
 
-# Định nghĩa các Vùng Thị trường
 LEADING_ZONE, COINCIDENT_ZONE, LAGGING_ZONE, NOISE_ZONE = "LEADING", "COINCIDENT", "LAGGING", "NOISE"
 
-# Chính sách điều chỉnh rủi ro dựa trên Vùng Thị trường
 ZONE_BASED_POLICIES = {
-    LEADING_ZONE: {"CAPITAL_RISK_MULTIPLIER": 0.8},                          # Giảm rủi ro khi thị trường có dấu hiệu sớm (có thể là fakeout)
-    COINCIDENT_ZONE: {"CAPITAL_RISK_MULTIPLIER": 1.2},                       # Tăng rủi ro khi thị trường đang có tín hiệu đồng thuận, rõ ràng
-    LAGGING_ZONE: {"CAPITAL_RISK_MULTIPLIER": 1.0},                          # Giữ rủi ro chuẩn khi thị trường đang trong xu hướng
-    NOISE_ZONE: {"CAPITAL_RISK_MULTIPLIER": 0.5}                             # Giảm mạnh rủi ro khi thị trường nhiễu, không rõ xu hướng
+    LEADING_ZONE: {"CAPITAL_RISK_MULTIPLIER": 0.8},
+    COINCIDENT_ZONE: {"CAPITAL_RISK_MULTIPLIER": 1.2},
+    LAGGING_ZONE: {"CAPITAL_RISK_MULTIPLIER": 1.0},
+    NOISE_ZONE: {"CAPITAL_RISK_MULTIPLIER": 0.5}
 }
 
 # ==============================================================================
@@ -196,171 +206,35 @@ ZONE_BASED_POLICIES = {
 # ==============================================================================
 
 TACTICS_LAB = {
-    # Chiến thuật "Giao dịch Cân bằng" - Long
     "Balanced_Trader_L": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [LAGGING_ZONE, COINCIDENT_ZONE],
-        "TRADE_TYPE": "LONG",
-        "ENTRY_SCORE": 6.3,
-        "RR": 1.5,
-        "ATR_SL_MULTIPLIER": 2.5,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.2,
-        "TRAIL_DISTANCE_RR": 0.8,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.6,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": True
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [LAGGING_ZONE, COINCIDENT_ZONE], "TRADE_TYPE": "LONG", "ENTRY_SCORE": 6.3, "RR": 1.5, "ATR_SL_MULTIPLIER": 2.5, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.2, "TRAIL_DISTANCE_RR": 0.8, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.6, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": True
     },
-    # Chiến thuật "Săn điểm Breakout" - Long
     "Breakout_Hunter_L": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE],
-        "TRADE_TYPE": "LONG",
-        "ENTRY_SCORE": 7.0,
-        "RR": 1.7,
-        "ATR_SL_MULTIPLIER": 2.4,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.3,
-        "TRAIL_DISTANCE_RR": 0.9,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.6,
-        "TP1_PROFIT_PCT": 0.5,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": False
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE], "TRADE_TYPE": "LONG", "ENTRY_SCORE": 7.0, "RR": 1.7, "ATR_SL_MULTIPLIER": 2.4, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.3, "TRAIL_DISTANCE_RR": 0.9, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.6, "TP1_PROFIT_PCT": 0.5, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": False
     },
-    # Chiến thuật "Săn điểm Hồi" - Long
     "Dip_Hunter_L": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE],
-        "TRADE_TYPE": "LONG",
-        "ENTRY_SCORE": 6.8,
-        "RR": 1.4,
-        "ATR_SL_MULTIPLIER": 3.2,
-        "USE_TRAILING_SL": False,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.7,
-        "USE_MOMENTUM_FILTER": False,
-        "USE_EXTREME_ZONE_FILTER": True
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE], "TRADE_TYPE": "LONG", "ENTRY_SCORE": 6.8, "RR": 1.4, "ATR_SL_MULTIPLIER": 3.2, "USE_TRAILING_SL": False, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.7, "USE_MOMENTUM_FILTER": False, "USE_EXTREME_ZONE_FILTER": True
     },
-    # Chiến thuật "Phản công của AI" - Long
     "AI_Aggressor_L": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [COINCIDENT_ZONE],
-        "TRADE_TYPE": "LONG",
-        "ENTRY_SCORE": 6.6,
-        "RR": 1.5,
-        "ATR_SL_MULTIPLIER": 2.2,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.1,
-        "TRAIL_DISTANCE_RR": 0.7,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.6,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": False
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [COINCIDENT_ZONE], "TRADE_TYPE": "LONG", "ENTRY_SCORE": 6.6, "RR": 1.5, "ATR_SL_MULTIPLIER": 2.2, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.1, "TRAIL_DISTANCE_RR": 0.7, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.6, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": False
     },
-    # Chiến thuật "Quan sát thận trọng" - Long
     "Cautious_Observer_L": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [NOISE_ZONE],
-        "TRADE_TYPE": "LONG",
-        "ENTRY_SCORE": 7.5,
-        "RR": 1.3,
-        "ATR_SL_MULTIPLIER": 1.8,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.0,
-        "TRAIL_DISTANCE_RR": 0.6,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.7,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": True
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [NOISE_ZONE], "TRADE_TYPE": "LONG", "ENTRY_SCORE": 7.5, "RR": 1.3, "ATR_SL_MULTIPLIER": 1.8, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.0, "TRAIL_DISTANCE_RR": 0.6, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.7, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": True
     },
-    # Chiến thuật "Giao dịch Cân bằng" - Short
     "Balanced_Seller_S": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [LAGGING_ZONE, COINCIDENT_ZONE],
-        "TRADE_TYPE": "SHORT",
-        "ENTRY_SCORE": -6.3,
-        "RR": 1.5,
-        "ATR_SL_MULTIPLIER": 2.5,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.2,
-        "TRAIL_DISTANCE_RR": 0.8,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.6,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": True
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [LAGGING_ZONE, COINCIDENT_ZONE], "TRADE_TYPE": "SHORT", "ENTRY_SCORE": -6.3, "RR": 1.5, "ATR_SL_MULTIPLIER": 2.5, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.2, "TRAIL_DISTANCE_RR": 0.8, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.6, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": True
     },
-    # Chiến thuật "Săn điểm Breakdown" - Short
     "Breakdown_Hunter_S": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE],
-        "TRADE_TYPE": "SHORT",
-        "ENTRY_SCORE": -7.0,
-        "RR": 1.7,
-        "ATR_SL_MULTIPLIER": 2.4,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.3,
-        "TRAIL_DISTANCE_RR": 0.9,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.6,
-        "TP1_PROFIT_PCT": 0.5,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": False
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE], "TRADE_TYPE": "SHORT", "ENTRY_SCORE": -7.0, "RR": 1.7, "ATR_SL_MULTIPLIER": 2.4, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.3, "TRAIL_DISTANCE_RR": 0.9, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.6, "TP1_PROFIT_PCT": 0.5, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": False
     },
-    # Chiến thuật "Bán đỉnh Hồi" - Short
     "Rally_Seller_S": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE],
-        "TRADE_TYPE": "SHORT",
-        "ENTRY_SCORE": -6.8,
-        "RR": 1.4,
-        "ATR_SL_MULTIPLIER": 3.2,
-        "USE_TRAILING_SL": False,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.7,
-        "USE_MOMENTUM_FILTER": False,
-        "USE_EXTREME_ZONE_FILTER": True
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [LEADING_ZONE, COINCIDENT_ZONE], "TRADE_TYPE": "SHORT", "ENTRY_SCORE": -6.8, "RR": 1.4, "ATR_SL_MULTIPLIER": 3.2, "USE_TRAILING_SL": False, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.7, "USE_MOMENTUM_FILTER": False, "USE_EXTREME_ZONE_FILTER": True
     },
-    # Chiến thuật "Phản công của AI" - Short
     "AI_Contrarian_S": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [COINCIDENT_ZONE],
-        "TRADE_TYPE": "SHORT",
-        "ENTRY_SCORE": -6.6,
-        "RR": 1.5,
-        "ATR_SL_MULTIPLIER": 2.2,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.1,
-        "TRAIL_DISTANCE_RR": 0.7,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.6,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": False
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [COINCIDENT_ZONE], "TRADE_TYPE": "SHORT", "ENTRY_SCORE": -6.6, "RR": 1.5, "ATR_SL_MULTIPLIER": 2.2, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.1, "TRAIL_DISTANCE_RR": 0.7, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.6, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": False
     },
-    # Chiến thuật "Bán khống Thận trọng" - Short
     "Cautious_Shorter_S": {
-        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0},
-        "OPTIMAL_ZONE": [NOISE_ZONE],
-        "TRADE_TYPE": "SHORT",
-        "ENTRY_SCORE": -7.5,
-        "RR": 1.3,
-        "ATR_SL_MULTIPLIER": 1.8,
-        "USE_TRAILING_SL": True,
-        "TRAIL_ACTIVATION_RR": 1.0,
-        "TRAIL_DISTANCE_RR": 0.6,
-        "ENABLE_PARTIAL_TP": True,
-        "TP1_RR_RATIO": 0.5,
-        "TP1_PROFIT_PCT": 0.7,
-        "USE_MOMENTUM_FILTER": True,
-        "USE_EXTREME_ZONE_FILTER": True
+        "WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}, "OPTIMAL_ZONE": [NOISE_ZONE], "TRADE_TYPE": "SHORT", "ENTRY_SCORE": -7.5, "RR": 1.3, "ATR_SL_MULTIPLIER": 1.8, "USE_TRAILING_SL": True, "TRAIL_ACTIVATION_RR": 1.0, "TRAIL_DISTANCE_RR": 0.6, "ENABLE_PARTIAL_TP": True, "TP1_RR_RATIO": 0.5, "TP1_PROFIT_PCT": 0.7, "USE_MOMENTUM_FILTER": True, "USE_EXTREME_ZONE_FILTER": True
     },
 }
 
@@ -389,7 +263,6 @@ def setup_logging():
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(logging.INFO)
     
-    # SỬA ĐỊNH DẠNG LOG CHO GIỐNG MẪU SẾP THÍCH
     formatter = logging.Formatter("[%(asctime)s] (ExnessBot) %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     
     file_handler.setFormatter(formatter)
@@ -401,9 +274,6 @@ def setup_logging():
     logger.addHandler(error_file_handler)
     logger.addHandler(stream_handler)
     logger.setLevel(logging.DEBUG)
-    
-    # *** DÒNG THẦN THÁNH: Chặn log bị lặp ***
-    # Ngăn logger này đẩy message lên cho logger cha (root logger), tránh in 2 lần.
     logger.propagate = False
 
 def acquire_lock(timeout=10):
@@ -435,6 +305,9 @@ def load_state():
         "last_error_sent_time": None, "last_capital_adjustment_time": None,
         "balance_end_of_last_session": 0.0, "realized_pnl_last_session": 0.0,
         "orphan_position_alerts": {},
+        # <<< NEW >>> Các biến state mới để quản lý rủi ro
+        "daily_realized_pnl": 0.0,
+        "last_day_checked": ""
     }
     if not os.path.exists(STATE_FILE):
         state = default_state
@@ -498,7 +371,13 @@ def build_dynamic_alert_text(state: Dict, equity: float) -> str:
     pnl_total_usd = equity - initial_capital
     pnl_total_percent = (pnl_total_usd / initial_capital) * 100 if initial_capital > 0 else 0
     pnl_icon = "🟢" if pnl_total_usd >= 0 else "🔴"
-    header = f"💰 Vốn BĐ: **${initial_capital:,.2f}** | 📊 Equity: **${equity:,.2f}** | 📈 PnL Tổng: {pnl_icon} **${pnl_total_usd:,.2f} ({pnl_total_percent:+.2f}%)**"
+    
+    # <<< NEW >>> Thêm thông tin PnL ngày vào báo cáo
+    daily_pnl = state.get('daily_realized_pnl', 0.0)
+    daily_pnl_icon = "🟢" if daily_pnl >= 0 else "🔴"
+    daily_pnl_str = f"| ☀️ PnL Ngày: {daily_pnl_icon} **${daily_pnl:,.2f}**"
+    
+    header = f"💰 Vốn BĐ: **${initial_capital:,.2f}** | 📊 Equity: **${equity:,.2f}** | 📈 PnL Tổng: {pnl_icon} **${pnl_total_usd:,.2f} ({pnl_total_percent:+.2f}%)** {daily_pnl_str}"
     lines = [f"💡 **CẬP NHẬT ĐỘNG EXNESS BOT** - `{now_vn_str}`", header]
 
     session_events = state.get('session_events', [])
@@ -716,42 +595,60 @@ def manage_dynamic_capital():
         save_state()
 
 def find_and_open_new_trades():
+    global state
+    # --- BƯỚC 0: KIỂM TRA CÁC "CẦU DAO AN TOÀN" ---
+    # Kiểm tra và reset PnL ngày mới
+    today_str = datetime.now(VIETNAM_TZ).strftime('%Y-%m-%d')
+    last_day_checked = state.get('last_day_checked', '')
+    if today_str != last_day_checked:
+        logger.info(f"☀️  Ngày mới ({today_str}). Reset bộ đếm PnL ngày.")
+        state['daily_realized_pnl'] = 0.0
+        state['last_day_checked'] = today_str
+
+    # Kiểm tra giới hạn thua lỗ ngày
+    daily_loss_limit_pct = RISK_RULES_CONFIG.get("DAILY_LOSS_LIMIT_PERCENT", -100.0)
+    capital_base = state.get('initial_capital', 1)
+    daily_loss_limit_usd = capital_base * (daily_loss_limit_pct / 100.0)
+    current_daily_pnl = state.get('daily_realized_pnl', 0.0)
+    
+    if current_daily_pnl <= daily_loss_limit_usd:
+        logger.warning(f"🛡️  ĐÃ CHẠM NGƯỠNG THUA LỖ NGÀY (${current_daily_pnl:,.2f} / ${daily_loss_limit_usd:,.2f}). Ngừng mở lệnh mới hôm nay.")
+        return
+
     # --- BƯỚC 1: KIỂM TRA ĐIỀU KIỆN TỔNG THỂ ---
-    if len(state.get("active_trades", [])) >= RISK_RULES_CONFIG["MAX_ACTIVE_TRADES"]:
+    active_trades = state.get("active_trades", [])
+    if len(active_trades) >= RISK_RULES_CONFIG["MAX_ACTIVE_TRADES"]:
         logger.debug("Đã đạt giới hạn %d lệnh mở. Bỏ qua quét.", RISK_RULES_CONFIG["MAX_ACTIVE_TRADES"])
         return
         
     account_info = connector.get_account_info()
     if not account_info: return
     
-    current_total_risk_usd = sum(t.get('risk_amount_usd', 0) for t in state.get("active_trades", []))
+    current_total_risk_usd = sum(t.get('risk_amount_usd', 0) for t in active_trades)
     risk_limit_pct = RISK_RULES_CONFIG["MAX_TOTAL_RISK_EXPOSURE_PERCENT"]
     risk_limit_usd = account_info['equity'] * (risk_limit_pct / 100)
     
     if current_total_risk_usd >= risk_limit_usd:
         logger.debug("Đã đạt giới hạn tổng rủi ro (%.2f/%.2f USD). Bỏ qua quét.", current_total_risk_usd, risk_limit_usd)
         return
-    
+        
+    # <<< NEW >>> Đếm số lệnh đang mở theo mỗi hướng
+    max_per_direction = RISK_RULES_CONFIG.get("MAX_TRADES_PER_DIRECTION", 5)
+    long_count = sum(1 for t in active_trades if t['type'] == 'LONG')
+    short_count = sum(1 for t in active_trades if t['type'] == 'SHORT')
+
     # --- BƯỚC 2: THU THẬP TẤT CẢ CƠ HỘI ---
     opportunities, now_vn, cooldown_map = [], datetime.now(VIETNAM_TZ), state.get('cooldown_until', {})
     
     for symbol in GENERAL_CONFIG["SYMBOLS_TO_SCAN"]:
-        if any(t['symbol'] == symbol for t in state.get("active_trades", [])):
-            continue
+        if any(t['symbol'] == symbol for t in active_trades): continue
         cooldown_str = cooldown_map.get(symbol, {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"])
-        if cooldown_str and now_vn < datetime.fromisoformat(cooldown_str):
-            continue
-            
+        if cooldown_str and now_vn < datetime.fromisoformat(cooldown_str): continue
         indicators = indicator_results.get(symbol, {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"])
-        if not indicators:
-            continue
+        if not indicators: continue
             
         decision = get_advisor_decision(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], indicators, {"WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}})
         raw_score = decision.get('final_score', 0.0)
-        
-        # === SỬA LOGIC Ở ĐÂY ===
-        # BỎ QUA CÁI BỘ LỌC NGU NGỐC Ở ĐÂY. CỨ THU THẬP HẾT.
-        
         market_zone, trade_type = determine_market_zone(indicators), "LONG" if raw_score > 0 else "SHORT"
         
         for tactic_name, tactic_cfg in TACTICS_LAB.items():
@@ -765,8 +662,7 @@ def find_and_open_new_trades():
             
             final_score = raw_score * mtf_coeff * ez_coeff
             
-            if cooldown_str and abs(final_score) < GENERAL_CONFIG["OVERRIDE_COOLDOWN_SCORE"]:
-                continue
+            if cooldown_str and abs(final_score) < GENERAL_CONFIG["OVERRIDE_COOLDOWN_SCORE"]: continue
                 
             opportunities.append({
                 "symbol": symbol, "score": final_score, "raw_score": raw_score, 
@@ -781,13 +677,10 @@ def find_and_open_new_trades():
         return
     
     top_n = GENERAL_CONFIG["TOP_N_OPPORTUNITIES_TO_CHECK"]
-    
-    # LỌC SAU KHI ĐÃ CÓ DANH SÁCH ĐẦY ĐỦ
     min_score_threshold = GENERAL_CONFIG["MIN_RAW_SCORE_THRESHOLD"]
     qualified_opps = [opp for opp in opportunities if abs(opp['raw_score']) >= min_score_threshold]
 
     if not qualified_opps:
-        # BÁO CÁO NHỮNG THẰNG ĐIỂM CAO NHẤT BỊ LOẠI
         logger.info(f"=> Không có cơ hội nào đạt ngưỡng điểm tối thiểu ({min_score_threshold}).")
         top_rejected = sorted(opportunities, key=lambda x: abs(x['raw_score']), reverse=True)[:top_n]
         logger.info(f"---[📉 Top {len(top_rejected)} cơ hội bị loại vì điểm thấp]---")
@@ -796,7 +689,6 @@ def find_and_open_new_trades():
         return
 
     sorted_opps = sorted(qualified_opps, key=lambda x: abs(x['score']), reverse=True)[:top_n]
-    
     logger.info(f"---[🏆 Tìm thấy {len(qualified_opps)} cơ hội đạt chuẩn. Xem xét {len(sorted_opps)} cơ hội tốt nhất (tối đa {top_n})]---")
     
     found_trade_to_open = False
@@ -810,6 +702,15 @@ def find_and_open_new_trades():
         logger.info(log_prefix + log_score)
         logger.info(log_adjustments)
 
+        # <<< NEW >>> Kiểm tra giới hạn lệnh cùng hướng
+        trade_type = opp['tactic_cfg']['TRADE_TYPE']
+        if trade_type == "LONG" and long_count >= max_per_direction:
+            logger.info(f"      => 📉 Đã đạt giới hạn {max_per_direction} lệnh LONG. Bỏ qua.")
+            continue
+        if trade_type == "SHORT" and short_count >= max_per_direction:
+            logger.info(f"      => 📉 Đã đạt giới hạn {max_per_direction} lệnh SHORT. Bỏ qua.")
+            continue
+
         passes_score = (score >= entry_thresh) if score > 0 else (score <= entry_thresh)
         if not passes_score:
             logger.info("      => 📉 Không đạt ngưỡng điểm. Xem xét cơ hội tiếp theo...")
@@ -821,8 +722,24 @@ def find_and_open_new_trades():
             continue
             
         risk_dist_est = opp['indicators'].get('atr', 0) * opp['tactic_cfg'].get("ATR_SL_MULTIPLIER", 2.0)
-        capital_base = state.get('initial_capital', account_info['equity'])
-        adj_risk_pct = RISK_RULES_CONFIG["RISK_PER_TRADE_PERCENT"] * ZONE_BASED_POLICIES.get(opp['zone'], {}).get("CAPITAL_RISK_MULTIPLIER", 1.0)
+        
+        # <<< NEW >>> Tính toán rủi ro linh hoạt theo Market Zone và Phiên Giao Dịch
+        base_risk_pct = RISK_RULES_CONFIG["RISK_PER_TRADE_PERCENT"]
+        zone_multiplier = ZONE_BASED_POLICIES.get(opp['zone'], {}).get("CAPITAL_RISK_MULTIPLIER", 1.0)
+        
+        session_multiplier = 1.0
+        if SESSION_RISK_CONFIG["ENABLED"]:
+            current_hour = datetime.now(VIETNAM_TZ).hour
+            quiet_cfg = SESSION_RISK_CONFIG["QUIET_HOURS"]
+            active_cfg = SESSION_RISK_CONFIG["ACTIVE_HOURS"]
+            if quiet_cfg["START"] <= current_hour < quiet_cfg["END"]:
+                session_multiplier = quiet_cfg["MULTIPLIER"]
+                logger.info(f"      => 🌙 Phiên Á yên tĩnh. Giảm rủi ro (x{session_multiplier:.2f}).")
+            elif active_cfg["START"] <= current_hour < active_cfg["END"]:
+                session_multiplier = active_cfg["MULTIPLIER"]
+                logger.info(f"      => ☀️ Phiên Âu/Mỹ sôi động. Tăng rủi ro (x{session_multiplier:.2f}).")
+
+        adj_risk_pct = base_risk_pct * zone_multiplier * session_multiplier
         risk_amount_usd_est = capital_base * (adj_risk_pct / 100)
         
         passes_risk = (current_total_risk_usd + risk_amount_usd_est) <= risk_limit_usd
@@ -831,14 +748,14 @@ def find_and_open_new_trades():
             continue
             
         logger.info(f"      => ✅ Đạt mọi điều kiện. Tiến hành đặt lệnh...")
-        execute_trade(opp)
+        execute_trade(opp, adj_risk_pct) # Truyền rủi ro đã điều chỉnh vào hàm
         found_trade_to_open = True
         break
     
     if not found_trade_to_open:
         logger.info(f"  => Không có cơ hội nào trong top {len(sorted_opps)} đạt ngưỡng vào lệnh.")
 
-def execute_trade(opportunity):
+def execute_trade(opportunity, adjusted_risk_percent):
     symbol, tactic_cfg, indicators, score, tactic_name, zone = opportunity['symbol'], opportunity['tactic_cfg'], opportunity['indicators'], opportunity['score'], opportunity['tactic_name'], opportunity['zone']
     capital_base = state.get('initial_capital', connector.get_account_info()['equity'])
     order_type = mt5.ORDER_TYPE_BUY if tactic_cfg["TRADE_TYPE"] == "LONG" else mt5.ORDER_TYPE_SELL
@@ -849,8 +766,9 @@ def execute_trade(opportunity):
     if risk_dist <= 0: return logger.warning(f"ATR không hợp lệ cho {symbol}")
     sl_price = entry_price - risk_dist if order_type == mt5.ORDER_TYPE_BUY else entry_price + risk_dist
     tp_price = entry_price + (risk_dist * tactic_cfg.get("RR", 1.5)) if order_type == mt5.ORDER_TYPE_BUY else entry_price - (risk_dist * tactic_cfg.get("RR", 1.5))
-    adjusted_risk_pct = RISK_RULES_CONFIG["RISK_PER_TRADE_PERCENT"] * ZONE_BASED_POLICIES.get(zone, {}).get("CAPITAL_RISK_MULTIPLIER", 1.0)
-    risk_amount_usd = capital_base * (adjusted_risk_pct/100)
+    
+    risk_amount_usd = capital_base * (adjusted_risk_percent / 100) # Sử dụng rủi ro đã được điều chỉnh
+    
     lot_size = connector.calculate_lot_size(symbol, risk_amount_usd, sl_price)
     if lot_size is None or lot_size <= 0: return logger.warning(f"Lot size = {lot_size} không hợp lệ cho {symbol}")
     
@@ -916,7 +834,12 @@ def close_trade_on_mt5(trade, reason, close_pct=1.0):
     
     if lot_to_close >= trade['lot_size'] * 0.99:
         total_pnl_for_trade = sum(d.profit for d in deals if d.position_id == trade['ticket_id'])
-        state['session_realized_pnl'] = state.get('session_realized_pnl', 0.0) + total_pnl_for_trade - sum(trade.get('partial_pnl_details', {}).values())
+        
+        # <<< NEW >>> Cập nhật PnL ngày khi đóng toàn bộ lệnh
+        pnl_to_record = total_pnl_for_trade - sum(trade.get('partial_pnl_details', {}).values())
+        state['daily_realized_pnl'] = state.get('daily_realized_pnl', 0.0) + pnl_to_record
+        state['session_realized_pnl'] = state.get('session_realized_pnl', 0.0) + pnl_to_record
+        
         trade.update({'status': f'Closed ({reason})', 'exit_price': last_deal.price if deals else 'N/A', 'exit_time': datetime.now(VIETNAM_TZ).isoformat(), 'pnl_usd': total_pnl_for_trade})
         state['active_trades'] = [t for t in state['active_trades'] if t['trade_id'] != trade['trade_id']]
         state.setdefault('trade_history', []).append(trade)
@@ -926,7 +849,10 @@ def close_trade_on_mt5(trade, reason, close_pct=1.0):
         event_msg = f"[{event_time}] {icon} Đóng lệnh {trade['symbol']} ({reason}) | PnL: ${total_pnl_for_trade:,.2f}"
         state.setdefault('session_events', []).append(event_msg)
     else:
+        # <<< NEW >>> Cập nhật PnL ngày khi đóng một phần
+        state['daily_realized_pnl'] = state.get('daily_realized_pnl', 0.0) + closed_pnl
         state['session_realized_pnl'] = state.get('session_realized_pnl', 0.0) + closed_pnl
+        
         trade['partial_pnl_details'][reason] = trade['partial_pnl_details'].get(reason, 0) + closed_pnl
         trade['lot_size'] = round(trade['lot_size'] - lot_to_close, 2)
         event_msg = f"[{event_time}] 💰 Chốt lời {close_pct*100:.0f}% lệnh {trade['symbol']} ({reason}) | PnL: ${closed_pnl:,.2f}"
@@ -1138,12 +1064,10 @@ def main_loop():
             now_ts = time.time()
             now_vn = datetime.now(VIETNAM_TZ)
             
-            # --- TÁC VỤ NHẸ - CHẠY MỖI VÒNG LẶP ---
             manage_open_positions()
             handle_stale_trades()
             handle_dca_opportunities()
 
-            # --- KIỂM TRA BÁO CÁO ---
             account_info_for_report = connector.get_account_info()
             if account_info_for_report:
                 current_equity = account_info_for_report['equity']
@@ -1161,12 +1085,11 @@ def main_loop():
                         state['session_has_events'] = False
                         state['session_events'] = []
 
-            # --- TÁC VỤ NẶNG - CHẠY THEO CHU KỲ ---
             interval_minutes = GENERAL_CONFIG["HEAVY_TASK_INTERVAL_MINUTES"]
             current_minute = now_vn.minute
             
             if (current_minute % interval_minutes == 0) and (current_minute != last_heavy_task_minute):
-                last_heavy_task_minute = current_minute # ĐÁNH DẤU NGAY LẬP TỨC ĐỂ TRÁNH LẶP
+                last_heavy_task_minute = current_minute
                 
                 logger.info(f"--- [Chu kỳ {interval_minutes}m] Bắt đầu quét và phân tích... ---")
                 manage_dynamic_capital()
@@ -1175,7 +1098,6 @@ def main_loop():
                 find_and_open_new_trades()
                 save_state()
             
-            # --- ĐỐI SOÁT - CHẠY THEO CHU KỲ RIÊNG ---
             if now_ts - last_reconciliation_time > GENERAL_CONFIG["RECONCILIATION_INTERVAL_MINUTES"] * 60:
                 reconcile_positions()
                 last_reconciliation_time = now_ts
@@ -1185,40 +1107,29 @@ def main_loop():
             logger.info("Phát hiện KeyboardInterrupt. Đang dừng bot...")
             raise
         except Exception as e:
-            # Ghi log lỗi vào file ở mức ERROR để luôn có dấu vết, dù có gửi thông báo hay không
             logger.error(f"Lỗi nghiêm trọng trong vòng lặp chính: {e}\n```{traceback.format_exc()}```")
-
-            # Logic kiểm tra cooldown trước khi gửi thông báo
             now_dt = datetime.now(VIETNAM_TZ)
             last_alert_str = state.get('last_critical_error_alert_time')
             should_send_alert = True
-
             if last_alert_str:
                 last_alert_dt = datetime.fromisoformat(last_alert_str)
                 minutes_since = (now_dt - last_alert_dt).total_seconds() / 60
                 cooldown_period = GENERAL_CONFIG.get("CRITICAL_ERROR_COOLDOWN_MINUTES", 60)
-                
                 if minutes_since < cooldown_period:
                     should_send_alert = False
                     logger.info(f"Lỗi lặp lại trong thời gian cooldown. Tạm thời không gửi thông báo Discord.")
-
             if should_send_alert:
                 error_message = f"Lỗi nghiêm trọng trong vòng lặp chính: {e}\n```{traceback.format_exc()}```"
-                # Ghi log ở mức CRITICAL chỉ khi gửi thông báo
                 logger.critical(f"Gửi thông báo lỗi nghiêm trọng đến Discord: {e}")
                 send_discord_message(f"🚨 LỖI NGHIÊM TRỌNG: {error_message}", is_error=True, force=True)
-                
-                # Cập nhật lại thời gian gửi thông báo lỗi cuối cùng
                 state['last_critical_error_alert_time'] = now_dt.isoformat()
                 save_state()
-
-            # Luôn tạm dừng để tránh làm quá tải CPU khi lỗi lặp lại liên tục
             time.sleep(60)
 
 def run_bot():
     global connector, state
     setup_logging()
-    logger.info("=== KHỞI ĐỘNG EXNESS BOT V2.3 (THE SILENT OPERATOR) ===")
+    logger.info("=== KHỞI ĐỘNG EXNESS BOT V2.4 (THE GUARDIAN) ===")
     connector = ExnessConnector()
     if not connector.connect():
         logger.critical("Không thể kết nối MT5!")

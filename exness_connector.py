@@ -1,3 +1,5 @@
+# exness_connector.py
+
 import MetaTrader5 as mt5
 import os
 import pandas as pd
@@ -62,6 +64,7 @@ class ExnessConnector:
         try:
             rates = mt5.copy_rates_from_pos(symbol, mt5_timeframe, 0, count)
             if rates is None or len(rates) == 0:
+                logger.warning(f"Không có dữ liệu lịch sử cho {symbol} trên khung {timeframe}.")
                 return None
             df = pd.DataFrame(rates)
             df['time'] = pd.to_datetime(df['time'], unit='s')
@@ -69,21 +72,25 @@ class ExnessConnector:
             df.set_index('timestamp', inplace=True)
             return df[['open', 'high', 'low', 'close', 'volume']]
         except Exception as e:
-            logger.error(f"Lỗi ngoại lệ khi lấy dữ liệu lịch sử: {e}", exc_info=True)
+            logger.error(f"Lỗi ngoại lệ khi lấy dữ liệu lịch sử cho {symbol}: {e}", exc_info=True)
             return None
 
-    def get_open_positions(self, symbol):
+    def get_all_open_positions(self):
         if not self._is_connected: return []
-        positions = mt5.positions_get(symbol=symbol)
+        positions = mt5.positions_get()
         return positions if positions else []
 
     def place_order(self, symbol, order_type, lot_size, sl_price, tp_price, magic_number=202508):
         if not self._is_connected: return None
-        price = mt5.symbol_info_tick(symbol).ask if order_type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            logger.error(f"Không thể lấy giá tick cho {symbol} để đặt lệnh.")
+            return None
+        price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": lot_size,
             "type": order_type, "price": price, "sl": sl_price, "tp": tp_price,
-            "magic": magic_number, "comment": "ricealert_v1",
+            "magic": magic_number, "comment": "exness_bot_v2",
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
         }
         result = mt5.order_send(request)
@@ -93,91 +100,128 @@ class ExnessConnector:
         logger.error(f"❌ Đặt lệnh {symbol} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return None
 
-    def close_position(self, position, volume_to_close=None, comment="ricealert_close"):
+    def close_position(self, position, volume_to_close=None, comment="exness_bot_close"):
         if not self._is_connected: return None
-
+        tick = mt5.symbol_info_tick(position.symbol)
+        if not tick:
+            logger.error(f"Không thể lấy giá tick cho {position.symbol} để đóng lệnh.")
+            return None
         order_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
-        price = mt5.symbol_info_tick(position.symbol).bid if position.type == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(position.symbol).ask
-
+        price = tick.bid if position.type == mt5.ORDER_TYPE_BUY else tick.ask
         volume = volume_to_close if volume_to_close is not None and volume_to_close > 0 else position.volume
-
         request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": position.symbol,
-            "volume": volume,
-            "type": order_type,
-            "position": position.ticket,
-            "price": price,
-            "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_FOK,
+            "action": mt5.TRADE_ACTION_DEAL, "symbol": position.symbol, "volume": volume,
+            "type": order_type, "position": position.ticket, "price": price, "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
         }
-
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            print(f"✅ Lệnh đóng {volume} lot cho ticket #{position.ticket} đã được gửi thành công.")
+            logger.info(f"✅ Lệnh đóng {volume} lot cho ticket #{position.ticket} đã được gửi thành công.")
             return result
-            
-        print(f"❌ Đóng lệnh cho ticket #{position.ticket} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
+        logger.error(f"❌ Đóng lệnh cho ticket #{position.ticket} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return None
-
-    # --- CÁC HÀM MỚI ĐƯỢC THÊM VÀO ---
-    def get_all_open_positions(self):
-        if not self._is_connected: return []
-        positions = mt5.positions_get()
-        return positions if positions else []
-
-    def calculate_loss(self, symbol, order_type, volume, entry_price, sl_price):
-        if not self._is_connected: return None
-        loss = mt5.order_calc_loss(order_type, symbol, volume, entry_price, sl_price)
-        return abs(loss) if loss is not None else None
-
-    # [BỔ SUNG] Thêm hàm calculate_profit còn thiếu
-    def calculate_profit(self, symbol, order_type, volume, entry_price, current_price):
-        if not self._is_connected: return None
-        profit = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY if order_type == "LONG" else mt5.ORDER_TYPE_SELL, symbol, volume, entry_price, current_price)
-        return profit if profit is not None else None
 
     def modify_position(self, ticket_id, sl_price, tp_price):
         if not self._is_connected: return None
         request = {
-            "action": mt5.TRADE_ACTION_SLTP,
-            "position": ticket_id,
-            "sl": float(sl_price),
-            "tp": float(tp_price),
+            "action": mt5.TRADE_ACTION_SLTP, "position": ticket_id,
+            "sl": float(sl_price), "tp": float(tp_price),
         }
         result = mt5.order_send(request)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info(f"Sửa lệnh #{ticket_id} thành công. SL mới: {sl_price}, TP mới: {tp_price}")
+            logger.info(f"Sửa lệnh #{ticket_id} thành công. SL mới: {sl_price:.5f}, TP mới: {tp_price:.5f}")
             return True
         logger.error(f"Sửa lệnh #{ticket_id} thất bại. Retcode: {result.retcode if result else 'N/A'}, Error: {mt5.last_error()}")
         return False
+
+    def calculate_profit(self, symbol, order_type, volume, entry_price, current_price):
+        if not self._is_connected: return None
+        mt5_order_type = mt5.ORDER_TYPE_BUY if order_type == "LONG" else mt5.ORDER_TYPE_SELL
+        profit = mt5.order_calc_profit(mt5_order_type, symbol, volume, entry_price, current_price)
+        return profit if profit is not None else None
+
+    def calculate_lot_size(self, symbol, risk_amount_usd, sl_price):
+        """Tính toán lot size chính xác dựa trên số tiền rủi ro và khoảng cách stop loss."""
+        if not self._is_connected: return None
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                logger.error(f"Không thể lấy thông tin symbol {symbol}")
+                return None
+
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                logger.error(f"Không thể lấy giá tick của {symbol}")
+                return None
+            
+            # Sử dụng giá ASK cho lệnh BUY, giá BID cho lệnh SELL để tính toán
+            entry_price = tick.ask 
+            order_type = mt5.ORDER_TYPE_BUY
+            if sl_price > entry_price: # Nếu SL > giá vào lệnh, đây là lệnh SELL
+                 entry_price = tick.bid
+                 order_type = mt5.ORDER_TYPE_SELL
+
+            if abs(entry_price - sl_price) == 0:
+                logger.error(f"Giá vào lệnh và giá SL bằng nhau cho {symbol}")
+                return None
+
+            # Tính toán mức lỗ cho 1.0 lot dựa trên hàm của MT5 (chính xác nhất)
+            loss_per_lot = mt5.order_calc_loss(order_type, symbol, 1.0, entry_price, sl_price)
+            if loss_per_lot is None or loss_per_lot <= 0:
+                logger.error(f"Không thể tính toán mức lỗ cho 1 lot của {symbol}.")
+                return None
+
+            # Tính lot size thô
+            lot_size = risk_amount_usd / abs(loss_per_lot)
+
+            # Làm tròn và kiểm tra các giới hạn của sàn
+            min_vol, max_vol, vol_step = symbol_info.volume_min, symbol_info.volume_max, symbol_info.volume_step
+            
+            lot_size = round(lot_size / vol_step) * vol_step # Làm tròn theo bước khối lượng
+            lot_size = round(lot_size, 2) # Làm tròn tới 2 chữ số thập phân
+
+            if lot_size < min_vol:
+                logger.warning(f"Lot size tính toán ({lot_size}) < mức tối thiểu ({min_vol}). Sử dụng mức tối thiểu.")
+                return min_vol
+            if lot_size > max_vol:
+                logger.warning(f"Lot size tính toán ({lot_size}) > mức tối đa ({max_vol}). Sử dụng mức tối đa.")
+                return max_vol
+            
+            logger.debug(f"Tính toán lot size cho {symbol}: {lot_size} (Rủi ro: ${risk_amount_usd})")
+            return lot_size
+        except Exception as e:
+            logger.error(f"Lỗi ngoại lệ khi tính lot size cho {symbol}: {e}", exc_info=True)
+            return None
+
 
 if __name__ == "__main__":
     connector = ExnessConnector()
     if connector.connect():
         SYMBOL = "BTCUSD"
-        LOT_SIZE = 0.01
-        logger.info(f"\n--- Thử nghiệm đặt lệnh {LOT_SIZE} lot {SYMBOL} ---")
+        
+        # --- Thử nghiệm tính toán Lot Size ---
+        logger.info(f"\n--- Thử nghiệm tính toán Lot Size cho {SYMBOL} ---")
+        risk_demo = 20  # Muốn rủi ro $20
         tick = mt5.symbol_info_tick(SYMBOL)
         if tick:
             current_price = tick.ask
-            sl_demo = current_price - 1000
-            tp_demo = current_price + 2000
-            buy_result = connector.place_order(SYMBOL, mt5.ORDER_TYPE_BUY, LOT_SIZE, sl_demo, tp_demo)
-            if buy_result:
-                time.sleep(5)
-                positions = connector.get_all_open_positions()
-                found_position = next((p for p in positions if p.ticket == buy_result.order), None)
-                if found_position:
-                    logger.info(f"--- Tìm thấy vị thế (Ticket: {found_position.ticket}). Thử nghiệm sửa lệnh ---")
-                    new_sl = sl_demo + 100
-                    connector.modify_position(found_position.ticket, new_sl, tp_demo)
-                    time.sleep(2)
-                    logger.info(f"--- Thử nghiệm đóng lệnh ---")
-                    connector.close_position(found_position)
-                else:
-                    logger.warning("Không tìm thấy vị thế vừa mở để thử nghiệm.")
+            sl_price_demo = current_price - 1000 # SL cách 1000 giá
+            calculated_lot = connector.calculate_lot_size(SYMBOL, risk_demo, sl_price_demo)
+            if calculated_lot:
+                logger.info(f"Để rủi ro ${risk_demo} với SL tại {sl_price_demo:.2f}, cần vào lệnh {calculated_lot} lot.")
+
+                # --- Thử nghiệm đặt lệnh với lot size đã tính ---
+                logger.info(f"\n--- Thử nghiệm đặt lệnh {calculated_lot} lot {SYMBOL} ---")
+                tp_price_demo = current_price + 2000
+                buy_result = connector.place_order(SYMBOL, mt5.ORDER_TYPE_BUY, calculated_lot, sl_price_demo, tp_price_demo)
+                if buy_result:
+                    time.sleep(5)
+                    positions = connector.get_all_open_positions()
+                    found_position = next((p for p in positions if p.ticket == buy_result.order), None)
+                    if found_position:
+                        logger.info(f"--- Tìm thấy vị thế (Ticket: {found_position.ticket}). Thử nghiệm đóng lệnh ---")
+                        connector.close_position(found_position)
         else:
-            logger.error("Không thể lấy giá tick hiện tại của BTCUSD để thử nghiệm.")
+            logger.error("Không thể lấy giá tick hiện tại để thử nghiệm.")
+        
         connector.shutdown()
