@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 # main_exness_bot.py
-# Version: 2.5.1 - Critical Fixes
+# Version: 2.7.0 - The Apex Strategist
 # Date: 2025-08-26
 """
-CHANGELOG (v2.5.1):
-- FIX: Loại bỏ HTF Filter quá cứng nhắc
-- FIX: Sửa bug EZT coefficient cho SHORT trades  
-- FIX: Kiểm tra và sửa MTF coefficient logic
-- ENHANCEMENT: Thêm score smoothing để tránh dao động điên loạn
+CHANGELOG (v2.7.0):
+- FEATURE (EMA Smoothing): Tích hợp cơ chế làm mượt điểm số bằng Exponential Moving Average (EMA).
+    - EMA được đặt làm phương pháp mặc định, mang lại sự cân bằng tối ưu giữa tốc độ phản ứng và khả năng lọc nhiễu cho khung thời gian ngắn.
+    - Cấu hình linh hoạt, cho phép dễ dàng chuyển đổi giữa các phương pháp: EMA, MA, Rate Limiting hoặc tắt hoàn toàn.
+- REFACTOR (Core Logic): Tái cấu trúc và hoàn thiện các logic cốt lõi.
+    - Hoàn thiện hàm `get_extreme_zone_adjustment_coefficient` với logic đối xứng, chính xác.
+    - Loại bỏ hoàn toàn bộ lọc HTF cứng nhắc, trao toàn quyền quyết định cho hệ thống tính điểm thông minh.
+- ENHANCEMENT (Logging): Nâng cấp hệ thống ghi log.
+    - Log phân tích cơ hội giờ đây hiển thị chi tiết lý do và các tín hiệu đóng góp vào điểm số, giúp việc theo dõi và tối ưu hóa trở nên minh bạch hơn.
+- OPTIMIZATION (Code Structure): Tối ưu hóa cấu trúc mã nguồn để dễ đọc, dễ bảo trì và mở rộng trong tương lai.
 """
 
 import os
@@ -27,6 +32,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
 import traceback
+from collections import deque
 
 # --- CẤU HÌNH ĐƯỜNG DẪN & IMPORT ---
 try:
@@ -52,17 +58,40 @@ TRADE_HISTORY_CSV = os.path.join(DATA_DIR, "exness_trade_history.csv")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
+
 # --- BIẾN TOÀN CỤC & LOGGER ---
 VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 logger = logging.getLogger("ExnessBot")
 
 # ==============================================================================
-# ==================== 🎯 TRUNG TÂM CẤU HÌNH (FIXED) 🎯 =====================
+# ==================== 🎯 TRUNG TÂM CẤU HÌNH (v2.7.0) 🎯 =======================
 # ==============================================================================
+
+# NEW: Cấu hình hệ thống làm mượt điểm số (ĐÃ THÊM EMA)
+SCORE_SMOOTHING_CONFIG = {
+    # Chọn phương pháp: "RATE_LIMITING", "MOVING_AVERAGE", "EXPONENTIAL_MA", "NONE"
+    # LỰA CHỌN TỐT NHẤT CHO BẠN BÂY GIỜ LÀ "EXPONENTIAL_MA"
+    "METHOD": "EXPONENTIAL_MA",
+
+    "RATE_LIMITING_CONFIG": {
+        "FACTOR": 0.3,
+        "MAX_CHANGE": 5.0
+    },
+    "MA_SMOOTHING_CONFIG": {
+        "WINDOW": 2
+    },
+    # --- CẤU HÌNH MỚI CHO EMA ---
+    "EMA_SMOOTHING_CONFIG": {
+        # SPAN quyết định độ nhạy.
+        # SPAN thấp (3-5): Rất nhạy, ít trễ. Tốt cho khung 5m.
+        # SPAN cao (8-10): Mượt hơn, lọc nhiễu tốt hơn nhưng trễ hơn.
+        "SPAN": 5
+    }
+}
 
 SESSION_RISK_CONFIG = {
     "ENABLED": True,
-    "QUIET_HOURS": {"START": 2, "END": 8, "MULTIPLIER": 0.7}, 
+    "QUIET_HOURS": {"START": 2, "END": 8, "MULTIPLIER": 0.7},
     "ACTIVE_HOURS": {"START": 14, "END": 23, "MULTIPLIER": 1.1}
 }
 
@@ -74,23 +103,13 @@ GENERAL_CONFIG = {
     "HEAVY_TASK_INTERVAL_MINUTES": 5,
     "RECONCILIATION_INTERVAL_MINUTES": 15,
     "CANDLE_FETCH_COUNT": 300,
-    "TOP_N_OPPORTUNITIES_TO_CHECK": 5,
+    "TOP_N_OPPORTUNITIES_TO_CHECK": 2,
     "TRADE_COOLDOWN_HOURS": 1.0,
     "OVERRIDE_COOLDOWN_SCORE": 7.5,
     "MAGIC_NUMBER": 202508,
     "DAILY_SUMMARY_TIMES": ["08:10", "20:10"],
-    "MIN_RAW_SCORE_THRESHOLD": 2.0,
+    "MIN_RAW_SCORE_THRESHOLD": 1.0,
     "CRITICAL_ERROR_COOLDOWN_MINUTES": 60,
-    "SCORE_SMOOTHING_ENABLED": True,  # NEW: Bật smoothing
-    "SCORE_SMOOTHING_FACTOR": 0.3,    # NEW: Smooth 70%, chỉ lấy 30% thay đổi
-    "MAX_SCORE_CHANGE": 5.0,           # NEW: Thay đổi tối đa cho phép
-}
-
-# HTF Filter - DISABLED
-HTF_FILTER_CONFIG = {
-    "ENABLED": False,  # CHANGED: Tắt HTF filter
-    "WARNING_ONLY": True,  # Chỉ warning, không block
-    "DISTANCE_THRESHOLD_PCT": 5.0  # Chỉ cảnh báo nếu cách xa > 5%
 }
 
 DYNAMIC_ALERT_CONFIG = {
@@ -128,9 +147,9 @@ MTF_ANALYSIS_CONFIG = {
 
 EXTREME_ZONE_ADJUSTMENT_CONFIG = {
     "ENABLED": True,
-    "MAX_BONUS_COEFF": 1.15, "MIN_PENALTY_COEFF": 0.92,
+    "MAX_BONUS_COEFF": 1.15,
     "SCORING_WEIGHTS": { "RSI": 0.4, "BB_POS": 0.4, "CANDLE": 0.35, "SR_LEVEL": 0.35 },
-    "BASE_IMPACT": { "BONUS_PER_POINT": 0.10, "PENALTY_PER_POINT": -0.08 },
+    "BASE_IMPACT": { "BONUS_PER_POINT": 0.10 }, # Chỉ cần bonus
     "CONFLUENCE_MULTIPLIER": 1.4,
     "RULES_BY_TIMEFRAME": {
         "5m": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.93}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.07}},
@@ -259,7 +278,7 @@ connector = None
 state = {}
 indicator_results = {}
 price_dataframes = {}
-score_history = {}  # NEW: Lưu lịch sử điểm để smooth
+score_history = {}  # Biến này sẽ được sử dụng linh hoạt bởi các phương pháp smoothing
 
 SESSION_TEMP_KEYS = [
     'session_has_events', 'session_realized_pnl', 'session_orphan_alerts', 'session_events'
@@ -460,33 +479,69 @@ def load_all_indicators():
                 indicator_results[symbol][timeframe] = calculate_indicators(df, symbol, timeframe)
                 price_dataframes[symbol][timeframe] = df
 
-def smooth_score(symbol: str, new_score: float) -> float:
-    """Smooth điểm số để tránh dao động điên loạn"""
-    if not GENERAL_CONFIG.get("SCORE_SMOOTHING_ENABLED", False):
-        return new_score
-    
+def apply_score_smoothing(symbol: str, new_score: float) -> float:
+    """
+    Áp dụng phương pháp làm mượt điểm số được chọn trong cấu hình.
+    ĐÃ THÊM LOGIC CHO EMA.
+    """
+    method = SCORE_SMOOTHING_CONFIG.get("METHOD", "NONE")
     global score_history
-    key = symbol
-    
-    if key not in score_history:
-        score_history[key] = new_score
+
+    if method == "RATE_LIMITING":
+        cfg = SCORE_SMOOTHING_CONFIG.get("RATE_LIMITING_CONFIG", {})
+        max_change, factor = cfg.get("MAX_CHANGE", 5.0), cfg.get("FACTOR", 0.3)
+        history_key = f"{symbol}_rl"
+        
+        if history_key not in score_history:
+            score_history[history_key] = new_score
+            return new_score
+        
+        old_score = score_history[history_key]
+        score_change = new_score - old_score
+
+        if abs(score_change) > max_change:
+            logger.info(f"    (Smooth RL) Thay đổi điểm đột ngột cho {symbol}: {old_score:.2f} -> {new_score:.2f} (Δ{score_change:+.2f}). Áp dụng làm mượt...")
+            smoothed_score = old_score + (score_change * factor)
+        else:
+            smoothed_score = new_score
+        
+        score_history[history_key] = smoothed_score
+        return smoothed_score
+
+    elif method == "MOVING_AVERAGE":
+        cfg = SCORE_SMOOTHING_CONFIG.get("MA_SMOOTHING_CONFIG", {})
+        window = cfg.get("WINDOW", 3)
+        history_key = f"{symbol}_ma"
+        
+        if history_key not in score_history:
+            score_history[history_key] = deque([new_score] * window, maxlen=window)
+        else:
+            score_history[history_key].append(new_score)
+        
+        ma_score = sum(score_history[history_key]) / len(score_history[history_key])
+        return ma_score
+        
+    # --- LOGIC MỚI CHO EMA ---
+    elif method == "EXPONENTIAL_MA":
+        cfg = SCORE_SMOOTHING_CONFIG.get("EMA_SMOOTHING_CONFIG", {})
+        span = cfg.get("SPAN", 5)
+        history_key = f"{symbol}_ema"
+        
+        # Nếu chưa có lịch sử, EMA đầu tiên bằng chính điểm số mới
+        if history_key not in score_history:
+            score_history[history_key] = new_score
+            return new_score
+        
+        old_ema = score_history[history_key]
+        # Công thức tính EMA chuẩn
+        alpha = 2 / (span + 1)
+        new_ema = (new_score * alpha) + (old_ema * (1 - alpha))
+        
+        score_history[history_key] = new_ema
+        return new_ema
+
+    else: # "NONE" hoặc bất kỳ giá trị nào khác
         return new_score
-    
-    old_score = score_history[key]
-    score_change = new_score - old_score
-    
-    # Giới hạn thay đổi tối đa
-    max_change = GENERAL_CONFIG.get("MAX_SCORE_CHANGE", 5.0)
-    if abs(score_change) > max_change:
-        logger.warning(f"Score change quá lớn cho {symbol}: {old_score:.2f} -> {new_score:.2f} (Δ{score_change:+.2f}). Applying smoothing...")
-        # Áp dụng smoothing factor
-        smooth_factor = GENERAL_CONFIG.get("SCORE_SMOOTHING_FACTOR", 0.3)
-        smoothed_score = old_score + (score_change * smooth_factor)
-    else:
-        smoothed_score = new_score
-    
-    score_history[key] = smoothed_score
-    return smoothed_score
 
 def update_scores_for_active_trades():
     active_trades = state.get("active_trades", [])
@@ -497,22 +552,22 @@ def update_scores_for_active_trades():
             tactic_cfg = TACTICS_LAB.get(trade.get('opened_by_tactic'), {})
             tactic_weights = tactic_cfg.get("WEIGHTS")
             decision = get_advisor_decision(trade['symbol'], GENERAL_CONFIG['MAIN_TIMEFRAME'], indicators, {"WEIGHTS": tactic_weights})
-            raw_score = decision.get('final_score', 0.0)
             
-            # Apply MTF coefficient (đã kiểm tra logic)
+            # Áp dụng smoothing cho điểm của các lệnh đang mở
+            raw_score = decision.get('raw_tech_score', 0.0)
+            smoothed_raw_score = apply_score_smoothing(trade['symbol'], raw_score)
+            
+            # Apply MTF coefficient
             mtf_coeff = get_mtf_adjustment_coefficient(trade['symbol'], GENERAL_CONFIG['MAIN_TIMEFRAME'], trade['type'])
             
-            # Apply EZT coefficient với FIX cho SHORT trades
-            ez_coeff = 1.0
+            # Apply EZT coefficient
+            opportunity_coeff = 1.0
             if tactic_cfg.get("USE_EXTREME_ZONE_FILTER", False):
-                ez_coeff = get_extreme_zone_adjustment_coefficient_fixed(indicators, GENERAL_CONFIG['MAIN_TIMEFRAME'], trade['type'])
+                opportunity_coeff = get_extreme_zone_adjustment_coefficient(indicators, GENERAL_CONFIG['MAIN_TIMEFRAME'], trade['type'])
             
-            new_score = raw_score * mtf_coeff * ez_coeff
+            final_score = smoothed_raw_score * mtf_coeff * opportunity_coeff
             
-            # Apply smoothing
-            smoothed_score = smooth_score(trade['symbol'], new_score)
-            
-            trade['last_score'] = smoothed_score
+            trade['last_score'] = final_score
             trade['last_zone'] = determine_market_zone(indicators)
 
 def determine_market_zone(indicators):
@@ -546,21 +601,22 @@ def determine_market_zone(indicators):
     return max(scores, key=scores.get)
 
 def get_mtf_adjustment_coefficient(symbol, target_interval, trade_type):
-    """MTF coefficient logic - đã kiểm tra, logic đúng"""
     if not MTF_ANALYSIS_CONFIG["ENABLED"]: return 1.0
     trends = {tf: indicator_results.get(symbol, {}).get(tf, {}).get("trend", "sideways") for tf in GENERAL_CONFIG["MTF_TIMEFRAMES"]}
     fav_trend, unfav_trend = ("uptrend", "downtrend") if trade_type == "LONG" else ("downtrend", "uptrend")
     if target_interval == "5m":
         t15, t1h = trends.get("15m"), trends.get("1h")
-        # Logic đúng: unfav trend -> penalty, fav trend -> bonus
         if t15 == unfav_trend and t1h == unfav_trend: return MTF_ANALYSIS_CONFIG["SEVERE_PENALTY_COEFFICIENT"]
         if t15 == unfav_trend or t1h == unfav_trend: return MTF_ANALYSIS_CONFIG["PENALTY_COEFFICIENT"]
         if t15 == fav_trend and t1h == fav_trend: return MTF_ANALYSIS_CONFIG["BONUS_COEFFICIENT"]
         return MTF_ANALYSIS_CONFIG["SIDEWAYS_PENALTY_COEFFICIENT"]
     return 1.0
 
-def get_extreme_zone_adjustment_coefficient_fixed(indicators, interval, trade_type):
-    """FIXED: EZT coefficient với logic đúng cho SHORT trades"""
+def get_extreme_zone_adjustment_coefficient(indicators: Dict, interval: str, trade_type: str) -> float:
+    """
+    Tính toán hệ số cơ hội đảo chiều.
+    Logic đã được sửa lại để hoạt động đối xứng và chính xác cho cả LONG và SHORT.
+    """
     cfg = EXTREME_ZONE_ADJUSTMENT_CONFIG
     if not cfg.get("ENABLED", False): return 1.0
     
@@ -571,58 +627,49 @@ def get_extreme_zone_adjustment_coefficient_fixed(indicators, interval, trade_ty
     bbu, bbm, bbl = indicators.get("bb_upper", 0), indicators.get("bb_middle", 0), indicators.get("bb_lower", 0)
     if not all([price > 0, bbu > bbm, bbm > bbl]): return 1.0
     
-    bonus_score, penalty_score = 0.0, 0.0
+    long_opportunity_score, short_opportunity_score = 0.0, 0.0
     confirmation_cfg = cfg.get("CONFIRMATION_BOOST", {})
     
-    # Tính toán oversold/overbought scores
+    # --- Tính điểm cơ hội cho LONG (Khi thị trường QUÁ BÁN) ---
     oversold_rule = rules.get("OVERSOLD", {})
     bb_range = bbu - bbl
     if bb_range > 0:
         bb_pos = (price - bbl) / bb_range
-        if rsi < oversold_rule.get("RSI_BELOW", 1): bonus_score += weights.get("RSI", 0)
-        if bb_pos < oversold_rule.get("BB_POS_BELOW", 0.05): bonus_score += weights.get("BB_POS", 0)
+        if rsi < oversold_rule.get("RSI_BELOW", 30): long_opportunity_score += weights.get("RSI", 0)
+        if bb_pos < oversold_rule.get("BB_POS_BELOW", 0.07): long_opportunity_score += weights.get("BB_POS", 0)
     
     if confirmation_cfg.get("ENABLED"):
         candle, sup_level = indicators.get("candle_pattern"), indicators.get("support_level", 0)
-        if candle in confirmation_cfg.get("BULLISH_CANDLES", []): bonus_score += weights.get("CANDLE", 0)
-        is_near_support = sup_level > 0 and abs(price - sup_level) / price < confirmation_cfg.get("SUPPORT_PROXIMITY_PCT", 0.01)
-        if is_near_support: bonus_score += weights.get("SR_LEVEL", 0)
-    
+        if candle in confirmation_cfg.get("BULLISH_CANDLES", []): long_opportunity_score += weights.get("CANDLE", 0)
+        is_near_support = sup_level > 0 and abs(price - sup_level) / price < confirmation_cfg.get("SUPPORT_PROXIMITY_PCT", 0.007)
+        if is_near_support: long_opportunity_score += weights.get("SR_LEVEL", 0)
+
+    # --- Tính điểm cơ hội cho SHORT (Khi thị trường QUÁ MUA) ---
     overbought_rule = rules.get("OVERBOUGHT", {})
     if bb_range > 0:
         bb_pos = (price - bbl) / bb_range
-        if rsi > overbought_rule.get("RSI_ABOVE", 99): penalty_score += weights.get("RSI", 0)
-        if bb_pos > overbought_rule.get("BB_POS_ABOVE", 0.98): penalty_score += weights.get("BB_POS", 0)
+        if rsi > overbought_rule.get("RSI_ABOVE", 70): short_opportunity_score += weights.get("RSI", 0)
+        if bb_pos > overbought_rule.get("BB_POS_ABOVE", 0.93): short_opportunity_score += weights.get("BB_POS", 0)
     
     if confirmation_cfg.get("ENABLED"):
         candle, res_level = indicators.get("candle_pattern"), indicators.get("resistance_level", 0)
-        if candle in confirmation_cfg.get("BEARISH_CANDLES", []): penalty_score += weights.get("CANDLE", 0)
-        is_near_resistance = res_level > 0 and abs(price - res_level) / price < confirmation_cfg.get("RESISTANCE_PROXIMITY_PCT", 0.01)
-        if is_near_resistance: penalty_score += weights.get("SR_LEVEL", 0)
-    
-    # Apply confluence multiplier
-    if bonus_score >= (weights.get("RSI", 0.4) + weights.get("BB_POS", 0.4)): 
-        bonus_score *= cfg["CONFLUENCE_MULTIPLIER"]
-    if penalty_score >= (weights.get("RSI", 0.4) + weights.get("BB_POS", 0.4)): 
-        penalty_score *= cfg["CONFLUENCE_MULTIPLIER"]
-    
-    # Calculate base coefficient change
+        if candle in confirmation_cfg.get("BEARISH_CANDLES", []): short_opportunity_score += weights.get("CANDLE", 0)
+        is_near_resistance = res_level > 0 and abs(price - res_level) / price < confirmation_cfg.get("RESISTANCE_PROXIMITY_PCT", 0.007)
+        if is_near_resistance: short_opportunity_score += weights.get("SR_LEVEL", 0)
+
+    # --- Áp dụng hệ số dựa trên loại giao dịch ---
     base_impact = cfg.get("BASE_IMPACT", {})
+    bonus_per_point = base_impact.get("BONUS_PER_POINT", 0.10)
     
-    # FIXED: Apply logic đúng cho trade_type
     if trade_type == "LONG":
-        # Oversold (bonus_score) -> tăng điểm LONG
-        # Overbought (penalty_score) -> giảm điểm LONG
-        coeff_change = (bonus_score * base_impact.get("BONUS_PER_POINT", 0)) + \
-                      (penalty_score * base_impact.get("PENALTY_PER_POINT", 0))
-    else:  # SHORT
-        # Oversold (bonus_score) -> GIẢM điểm SHORT (vì oversold bad for short)
-        # Overbought (penalty_score) -> TĂNG điểm SHORT (vì overbought good for short)
-        coeff_change = -(bonus_score * base_impact.get("BONUS_PER_POINT", 0)) + \
-                      -(penalty_score * base_impact.get("PENALTY_PER_POINT", 0))
-    
+        # Nếu đang xét lệnh LONG, chỉ quan tâm đến điểm cơ hội LONG
+        coeff_change = long_opportunity_score * bonus_per_point
+    else: # SHORT
+        # Nếu đang xét lệnh SHORT, chỉ quan tâm đến điểm cơ hội SHORT
+        coeff_change = short_opportunity_score * bonus_per_point
+        
     calculated_coeff = 1.0 + coeff_change
-    return max(cfg["MIN_PENALTY_COEFF"], min(calculated_coeff, cfg["MAX_BONUS_COEFF"]))
+    return min(calculated_coeff, cfg["MAX_BONUS_COEFF"]) # Chỉ có bonus, không có penalty trực tiếp
 
 def is_momentum_confirmed(symbol, interval, direction="LONG"):
     config = MOMENTUM_FILTER_CONFIG
@@ -639,49 +686,13 @@ def is_momentum_confirmed(symbol, interval, direction="LONG"):
             is_green = candle['close'] > candle['open']
             closing_position_ratio = (candle['close'] - candle['low']) / candle_range
             price_condition_met = (direction == "LONG" and (is_green or closing_position_ratio > 0.6)) or \
-                                 (direction != "LONG" and (not is_green or closing_position_ratio < 0.4))
+                                  (direction != "LONG" and (not is_green or closing_position_ratio < 0.4))
             volume_condition_met = candle['tick_volume'] > candle.get('volume_sma_20', 0)
             if price_condition_met and volume_condition_met: good_candles_count += 1
         return good_candles_count >= required_candles
     except Exception as e:
         logger.error(f"Lỗi is_momentum_confirmed: {e}")
         return True
-
-def passes_htf_filter(symbol: str, trade_type: str) -> bool:
-    """HTF Filter - DISABLED hoặc chỉ warning"""
-    if not HTF_FILTER_CONFIG.get("ENABLED", False):
-        return True  # Disabled completely
-    
-    h1_indicators = indicator_results.get(symbol, {}).get("1h")
-    if not h1_indicators:
-        return True 
-    
-    current_price = indicator_results.get(symbol, {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"], {}).get("price", 0)
-    h1_ema_50 = h1_indicators.get("ema_50", 0)
-    
-    if not all([current_price > 0, h1_ema_50 > 0]):
-        return True 
-
-    distance_pct = abs(current_price - h1_ema_50) / h1_ema_50 * 100
-    
-    if HTF_FILTER_CONFIG.get("WARNING_ONLY", True):
-        # Chỉ warning, không block
-        if trade_type == "LONG" and current_price < h1_ema_50:
-            logger.warning(f"⚠️ HTF Warning: {symbol} giá {current_price:.2f} dưới H1 EMA50 {h1_ema_50:.2f} ({distance_pct:.1f}% gap)")
-        elif trade_type == "SHORT" and current_price > h1_ema_50:
-            logger.warning(f"⚠️ HTF Warning: {symbol} giá {current_price:.2f} trên H1 EMA50 {h1_ema_50:.2f} ({distance_pct:.1f}% gap)")
-        return True
-    else:
-        # Block chỉ khi cách xa quá ngưỡng
-        threshold = HTF_FILTER_CONFIG.get("DISTANCE_THRESHOLD_PCT", 5.0)
-        if trade_type == "LONG" and current_price < h1_ema_50 and distance_pct > threshold:
-            logger.info(f"      => ❌ HTF Filter: Giá cách xa EMA50 quá {threshold}% ({distance_pct:.1f}%). Block LONG.")
-            return False
-        elif trade_type == "SHORT" and current_price > h1_ema_50 and distance_pct > threshold:
-            logger.info(f"      => ❌ HTF Filter: Giá cách xa EMA50 quá {threshold}% ({distance_pct:.1f}%). Block SHORT.")
-            return False
-            
-    return True
 
 def manage_dynamic_capital():
     if not CAPITAL_MANAGEMENT_CONFIG["ENABLED"]: return
@@ -754,32 +765,33 @@ def find_and_open_new_trades():
         if cooldown_str and now_vn < datetime.fromisoformat(cooldown_str): continue
         indicators = indicator_results.get(symbol, {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"])
         if not indicators: continue
-        decision = get_advisor_decision(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], indicators, {"WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}})
-        raw_score = decision.get('final_score', 0.0)
         
-        # Apply smoothing cho raw score
-        raw_score = smooth_score(symbol, raw_score)
+        decision = get_advisor_decision(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], indicators, {"WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}})
+        
+        # Áp dụng smoothing LÊN ĐIỂM GỐC
+        raw_score = apply_score_smoothing(symbol, decision.get('raw_tech_score', 0.0))
         
         market_zone, trade_type = determine_market_zone(indicators), "LONG" if raw_score > 0 else "SHORT"
+        
         for tactic_name, tactic_cfg in TACTICS_LAB.items():
             if tactic_cfg["TRADE_TYPE"] != trade_type: continue
             if market_zone not in tactic_cfg.get("OPTIMAL_ZONE", []): continue
             
-            # Apply MTF coefficient
             mtf_coeff = get_mtf_adjustment_coefficient(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], trade_type)
             
-            # Apply FIXED EZT coefficient
-            ez_coeff = 1.0
+            opportunity_coeff = 1.0
             if tactic_cfg.get("USE_EXTREME_ZONE_FILTER", False):
-                ez_coeff = get_extreme_zone_adjustment_coefficient_fixed(indicators, GENERAL_CONFIG["MAIN_TIMEFRAME"], trade_type)
+                opportunity_coeff = get_extreme_zone_adjustment_coefficient(indicators, GENERAL_CONFIG["MAIN_TIMEFRAME"], trade_type)
             
-            final_score = raw_score * mtf_coeff * ez_coeff
+            final_score = raw_score * mtf_coeff * opportunity_coeff
+            
             if cooldown_str and abs(final_score) < GENERAL_CONFIG["OVERRIDE_COOLDOWN_SCORE"]: continue
             opportunities.append({
                 "symbol": symbol, "score": final_score, "raw_score": raw_score,
                 "tactic_name": tactic_name, "tactic_cfg": tactic_cfg,
                 "indicators": indicators, "zone": market_zone,
-                "mtf_coeff": mtf_coeff, "ez_coeff": ez_coeff
+                "mtf_coeff": mtf_coeff, "opportunity_coeff": opportunity_coeff,
+                "reason": decision.get("reason", "N/A") # Thêm reason để logging
             })
     if not opportunities:
         logger.info("=> Không tìm thấy bất kỳ cơ hội nào từ các cặp tiền được quét.")
@@ -791,12 +803,18 @@ def find_and_open_new_trades():
     logger.info(f"---[🔎 Phân tích {len(top_opps_to_log)} cơ hội hàng đầu (từ tổng số {len(opportunities)})]---")
     found_trade_to_open = False
     for i, opp in enumerate(top_opps_to_log):
-        score, entry_thresh, tactic_name, symbol = opp['score'], opp['tactic_cfg']['ENTRY_SCORE'], opp['tactic_name'], opp['symbol']
-        log_prefix = f"  #{i+1}: {symbol} | Tactic: {tactic_name}"
-        log_score = f"| Gốc: {opp['raw_score']:.2f} | Final: {score:.2f} (Ngưỡng: {entry_thresh})"
-        log_adjustments = f"      Chi tiết điều chỉnh: [MTF: x{opp['mtf_coeff']:.2f}] [Vùng Cực đoan: x{opp['ez_coeff']:.2f}]"
-        logger.info(log_prefix + log_score)
-        logger.info(log_adjustments)
+        # --- LOGGING NÂNG CẤP ---
+        logger.info(f"  #{i+1}: {opp['symbol']} | Tactic: {opp['tactic_name']}")
+        logger.info(f"      => Điểm Gốc (đã làm mượt): {opp['raw_score']:.2f} | Điểm Final: {opp['score']:.2f} (Ngưỡng: {opp['tactic_cfg']['ENTRY_SCORE']})")
+        logger.info(f"      => Điều chỉnh: [MTF: x{opp['mtf_coeff']:.2f}] [Cơ hội Đảo chiều: x{opp['opportunity_coeff']:.2f}]")
+        
+        # Log chi tiết các lý do
+        reasons = opp.get('reason', '').split(' | ')
+        if reasons and reasons[0] != 'No signals detected':
+            logger.info("      => Lý do chính:")
+            for reason in reasons[:3]: # Chỉ log 3 lý do hàng đầu cho gọn
+                logger.info(f"          - {reason}")
+                
         if abs(opp['raw_score']) < min_score_threshold:
             logger.info(f"      => ❌ Không đạt ngưỡng điểm tối thiểu ({min_score_threshold}). Bỏ qua.")
             continue
@@ -807,17 +825,15 @@ def find_and_open_new_trades():
         if trade_type == "SHORT" and short_count >= max_per_direction:
             logger.info(f"      => ❌ Đã đạt giới hạn {max_per_direction} lệnh SHORT. Bỏ qua.")
             continue
-        passes_score = (score >= entry_thresh) if score > 0 else (score <= entry_thresh)
+        passes_score = (opp['score'] >= opp['tactic_cfg']['ENTRY_SCORE']) if opp['score'] > 0 else (opp['score'] <= opp['tactic_cfg']['ENTRY_SCORE'])
         if not passes_score:
             logger.info("      => ❌ Không đạt ngưỡng điểm. Xem xét cơ hội tiếp theo...")
             continue
-        passes_momentum = not opp['tactic_cfg']['USE_MOMENTUM_FILTER'] or is_momentum_confirmed(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], opp['tactic_cfg']['TRADE_TYPE'])
+        passes_momentum = not opp['tactic_cfg']['USE_MOMENTUM_FILTER'] or is_momentum_confirmed(opp['symbol'], GENERAL_CONFIG["MAIN_TIMEFRAME"], opp['tactic_cfg']['TRADE_TYPE'])
         if not passes_momentum:
             logger.info("      => ❌ Lọc động lượng thất bại. Xem xét cơ hội tiếp theo...")
             continue
-        passes_htf = passes_htf_filter(symbol, opp['tactic_cfg']['TRADE_TYPE'])
-        if not passes_htf:
-            continue
+        
         base_risk_pct = RISK_RULES_CONFIG["RISK_PER_TRADE_PERCENT"]
         zone_multiplier = ZONE_BASED_POLICIES.get(opp['zone'], {}).get("CAPITAL_RISK_MULTIPLIER", 1.0)
         session_multiplier = 1.0
@@ -1111,7 +1127,7 @@ def reconcile_positions():
         for ticket in closed_manually: logger.warning(f"Vị thế #{ticket} do bot quản lý đã bị đóng thủ công hoặc bởi SL/TP của sàn.")
         closed_trades = [t for t in state["active_trades"] if t['ticket_id'] in closed_manually]
         for t in closed_trades: t.update({'status': 'Closed (Manual/Reconciled)', 'exit_time': datetime.now(VIETNAM_TZ).isoformat()})
-        state.setdefault("trade_history", []).append(t)
+        state.setdefault("trade_history", []).extend(closed_trades)
         state["active_trades"] = [t for t in state["active_trades"] if t['ticket_id'] not in closed_manually]
     now = datetime.now(VIETNAM_TZ)
     orphan_alerts = state.setdefault('orphan_position_alerts', {})
@@ -1259,7 +1275,7 @@ def main_loop():
 def run_bot():
     global connector, state
     setup_logging()
-    logger.info("=== KHỞI ĐỘNG EXNESS BOT V2.5.1 (CRITICAL FIXES) ===")
+    logger.info("=== KHỞI ĐỘNG EXNESS BOT V2.7.0 (THE APEX STRATEGIST) ===")
     connector = ExnessConnector()
     if not connector.connect():
         logger.critical("Không thể kết nối MT5!")
