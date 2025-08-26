@@ -64,7 +64,9 @@ def calculate_indicators(df: pd.DataFrame, symbol: str, interval: str) -> dict:
         elif prev_hist > 0 and macd_hist < 0:
             macd_cross = "bearish"
         
-    adx = ta.trend.adx(df["high"], df["low"], df["close"], window=14).iloc[closed_candle_idx]
+    adx_indicator = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14)
+    adx = adx_indicator.adx().iloc[closed_candle_idx]
+    
     vol_ma20 = df["volume"].rolling(window=20).mean().iloc[closed_candle_idx]
     cmf = ta.volume.chaikin_money_flow(df["high"], df["low"], df["close"], df["volume"], window=20).iloc[closed_candle_idx]
     
@@ -106,6 +108,14 @@ def calculate_indicators(df: pd.DataFrame, symbol: str, interval: str) -> dict:
         elif curr_c < curr_o and prev_c > prev_o and curr_o > prev_c and curr_c < prev_o:
             candle_pattern = "bearish_engulfing"
     
+    market_regime = "SIDEWAYS_VOLATILE"
+    if adx > 25:
+        market_regime = "TRENDING"
+    else:
+        bb_width_percent = (bb_width / bb_middle) * 100 if bb_middle > 0 else 0
+        if bb_width_percent < 4.0: # Mức % này có thể cần tinh chỉnh cho từng cặp tiền
+            market_regime = "SIDEWAYS_QUIET"
+
     result = {
         "symbol": symbol, "interval": interval, "price": current_live_price, "closed_candle_price": price,
         "ema_9": ema_9, "ema_20": ema_20, "ema_50": ema_50, "ema_200": ema_200, "trend": trend,
@@ -119,6 +129,7 @@ def calculate_indicators(df: pd.DataFrame, symbol: str, interval: str) -> dict:
         "prev_high": df["high"].iloc[closed_candle_idx - 1] if len(df) > abs(closed_candle_idx - 1) else 0,
         "prev_low": df["low"].iloc[closed_candle_idx - 1] if len(df) > abs(closed_candle_idx - 1) else 0,
         "prev_close": df["close"].iloc[closed_candle_idx - 1] if len(df) > abs(closed_candle_idx - 1) else 0,
+        "market_regime": market_regime,
     }
     
     for k, v in result.items():
