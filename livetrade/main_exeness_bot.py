@@ -85,7 +85,7 @@ SCORE_SMOOTHING_CONFIG = {
         # SPAN quyết định độ nhạy.
         # SPAN thấp (3-5): Rất nhạy, ít trễ. Tốt cho khung 5m.
         # SPAN cao (8-10): Mượt hơn, lọc nhiễu tốt hơn nhưng trễ hơn.
-        "SPAN": 5
+        "SPAN": 10
     }
 }
 
@@ -165,8 +165,8 @@ EXTREME_ZONE_ADJUSTMENT_CONFIG = {
 }
 
 ACTIVE_TRADE_MANAGEMENT_CONFIG = {
-    "EARLY_CLOSE_ABS_THRESHOLD_L": 3.8, "EARLY_CLOSE_ABS_THRESHOLD_S": -3.8,
-    "EARLY_CLOSE_REL_DROP_PCT": 0.35,
+    "EARLY_CLOSE_ABS_THRESHOLD_L": 2.5, "EARLY_CLOSE_ABS_THRESHOLD_S": -2.5,
+    "EARLY_CLOSE_REL_DROP_PCT": 0.5,
     "PARTIAL_EARLY_CLOSE_PCT": 0.5,
     "PROFIT_PROTECTION": {
         "ENABLED": True,

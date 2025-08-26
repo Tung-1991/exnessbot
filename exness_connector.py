@@ -175,7 +175,7 @@ class ExnessConnector:
                 return None
 
             # Tính toán mức lỗ cho 1.0 lot dựa trên hàm của MT5 (chính xác nhất)
-            loss_per_lot = mt5.order_calc_loss(order_type, symbol, 1.0, entry_price, sl_price)
+            loss_per_lot = mt5.order_calc_profit(order_type, symbol, 1.0, entry_price, sl_price)
             if loss_per_lot is None or loss_per_lot <= 0:
                 logger.error(f"Không thể tính toán mức lỗ cho 1 lot của {symbol}. Có thể do SL quá gần.")
                 return None
