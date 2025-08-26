@@ -1129,7 +1129,7 @@ def run_bot():
             state['initial_capital'] = account_info['equity']
             state['balance_end_of_last_session'] = account_info['balance']
             save_state()
-        logger.info(f"? Ðã k?t n?i MT5 thành công. Tài kho?n #{account_info['login']} | V?n n?n t?ng: ${state.get('initial_capital', 0):,.2f}")
+        logger.info(f"? connect MT5 thành công. Tài kho?n #{account_info['login']} | V?n n?n t?ng: ${state.get('initial_capital', 0):,.2f}")
         main_loop()
     except KeyboardInterrupt:
         logger.info("Ðã d?ng bot theo yêu c?u ngu?i dùng.")
