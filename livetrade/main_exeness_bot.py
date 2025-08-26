@@ -4,10 +4,10 @@
 # Date: 2025-08-25
 """
 CHANGELOG (v2.4.0):
-- FEATURE (Daily Loss Limit): Thêm "cầu dao tự động", bot sẽ ngừng mở lệnh mới trong ngày nếu chạm ngưỡng thua lỗ đã định.
-- FEATURE (Directional Trade Limit): Giới hạn số lượng lệnh tối đa được mở cùng một hướng (Long/Short) để tránh rủi ro tập trung.
-- FEATURE (Session-Based Risk): Tự động điều chỉnh % rủi ro/lệnh dựa trên phiên giao dịch (giảm rủi ro trong phiên Á yên tĩnh).
-- REFACTOR (State Management): Cải tiến state để theo dõi PnL trong ngày.
+- FEATURE (Daily Loss Limit): Thêm "c?u dao t? d?ng", bot s? ng?ng m? l?nh m?i trong ngày n?u ch?m ngu?ng thua l? dã d?nh.
+- FEATURE (Directional Trade Limit): Gi?i h?n s? lu?ng l?nh t?i da du?c m? cùng m?t hu?ng (Long/Short) d? tránh r?i ro t?p trung.
+- FEATURE (Session-Based Risk): T? d?ng di?u ch?nh % r?i ro/l?nh d?a trên phiên giao d?ch (gi?m r?i ro trong phiên Á yên tinh).
+- REFACTOR (State Management): C?i ti?n state d? theo dõi PnL trong ngày.
 """
 
 import os
@@ -28,7 +28,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dotenv import load_dotenv
 import traceback
 
-# --- CẤU HÌNH ĐƯỜNG DẪN & IMPORT ---
+# --- C?U HÌNH ÐU?NG D?N & IMPORT ---
 try:
     PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
     PARENT_DIR = os.path.dirname(PROJECT_ROOT)
@@ -41,9 +41,9 @@ try:
     from indicator import calculate_indicators
     from trade_advisor import get_advisor_decision
 except ImportError as e:
-    sys.exit(f"Lỗi import module: {e}. Đảm bảo các file nằm đúng cấu trúc thư mục.")
+    sys.exit(f"L?i import module: {e}. Ð?m b?o các file n?m dúng c?u trúc thu m?c.")
 
-# --- CẤU HÌNH THƯ MỤC & FILE ---
+# --- C?U HÌNH THU M?C & FILE ---
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE = os.path.join(DATA_DIR, "exness_state.json")
@@ -53,21 +53,21 @@ LOG_DIR = os.path.join(DATA_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
-# --- BIẾN TOÀN CỤC & LOGGER ---
+# --- BI?N TOÀN C?C & LOGGER ---
 VIETNAM_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
 logger = logging.getLogger("ExnessBot")
 
 # ==============================================================================
-# ==================== ⚙️ TRUNG TÂM CẤU HÌNH (UPGRADED) ⚙️ =====================
+# ==================== ?? TRUNG TÂM C?U HÌNH (UPGRADED) ?? =====================
 # ==============================================================================
 
-# <<< NEW >>> CẤU HÌNH RỦI RO THEO PHIÊN GIAO DỊCH
+# <<< NEW >>> C?U HÌNH R?I RO THEO PHIÊN GIAO D?CH
 SESSION_RISK_CONFIG = {
     "ENABLED": True,
-    # Giờ VN (GMT+7). Phiên Á thường yên tĩnh từ khoảng 2h sáng đến 8h sáng.
-    "QUIET_HOURS": {"START": 2, "END": 8, "MULTIPLIER": 0.7}, # Giảm rủi ro còn 70%
-    # Phiên Âu/Mỹ sôi động, có thể tăng nhẹ rủi ro
-    "ACTIVE_HOURS": {"START": 14, "END": 23, "MULTIPLIER": 1.1} # Tăng rủi ro lên 110%
+    # Gi? VN (GMT+7). Phiên Á thu?ng yên tinh t? kho?ng 2h sáng d?n 8h sáng.
+    "QUIET_HOURS": {"START": 2, "END": 8, "MULTIPLIER": 0.7}, # Gi?m r?i ro còn 70%
+    # Phiên Âu/M? sôi d?ng, có th? tang nh? r?i ro
+    "ACTIVE_HOURS": {"START": 14, "END": 23, "MULTIPLIER": 1.1} # Tang r?i ro lên 110%
 }
 
 GENERAL_CONFIG = {
@@ -127,7 +127,7 @@ EXTREME_ZONE_ADJUSTMENT_CONFIG = {
     "BASE_IMPACT": { "BONUS_PER_POINT": 0.10, "PENALTY_PER_POINT": -0.08 },
     "CONFLUENCE_MULTIPLIER": 1.4,
     "RULES_BY_TIMEFRAME": {
-        "5m": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.93}, "OVERSOLD": {"RSI_BELOW": 28, "BB_POS_BELOW": 0.07}},
+        "5m": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.93}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.07}},
         "15m": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.93}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.07}},
         "1h": {"OVERBOUGHT": {"RSI_ABOVE": 70, "BB_POS_ABOVE": 0.92}, "OVERSOLD": {"RSI_BELOW": 30, "BB_POS_BELOW": 0.08}}
     },
@@ -162,9 +162,9 @@ RISK_RULES_CONFIG = {
     "OPEN_TRADE_RETRY_LIMIT": 3,
     "CLOSE_TRADE_RETRY_LIMIT": 3,
     "RETRY_DELAY_SECONDS": 5,
-    # <<< NEW >>> CÁC QUY TẮC BẢO VỆ MỚI
-    "DAILY_LOSS_LIMIT_PERCENT": -3.0,   # Ngừng giao dịch nếu lỗ trong ngày chạm -3% vốn
-    "MAX_TRADES_PER_DIRECTION": 2,      # Tối đa 2 lệnh Long hoặc 2 lệnh Short cùng lúc
+    # <<< NEW >>> CÁC QUY T?C B?O V? M?I
+    "DAILY_LOSS_LIMIT_PERCENT": -3.0,   # Ng?ng giao d?ch n?u l? trong ngày ch?m -3% v?n
+    "MAX_TRADES_PER_DIRECTION": 2,      # T?i da 2 l?nh Long ho?c 2 l?nh Short cùng lúc
     "STALE_TRADE_RULES": {
         "5m": {"HOURS": 8, "PROGRESS_THRESHOLD_PCT": 1.0},
         "STAY_OF_EXECUTION_SCORE_L": 6.0,
@@ -202,7 +202,7 @@ ZONE_BASED_POLICIES = {
 }
 
 # ==============================================================================
-# ======================== TACTICS LAB - BỘ CHIẾN THUẬT =======================
+# ======================== TACTICS LAB - B? CHI?N THU?T =======================
 # ==============================================================================
 
 TACTICS_LAB = {
@@ -239,7 +239,7 @@ TACTICS_LAB = {
 }
 
 # ==============================================================================
-# ==================== BIẾN TOÀN CỤC & HÀM TIỆN ÍCH ====================
+# ==================== BI?N TOÀN C?C & HÀM TI?N ÍCH ====================
 # ==============================================================================
 
 connector = None
@@ -280,7 +280,7 @@ def acquire_lock(timeout=10):
     if os.path.exists(LOCK_FILE):
         try:
             if (time.time() - os.path.getmtime(LOCK_FILE)) / 60 > 5:
-                logger.warning("Lock file cũ. Tự động xóa.")
+                logger.warning("Lock file cu. T? d?ng xóa.")
                 release_lock()
         except Exception: pass
     start_time = time.time()
@@ -305,7 +305,7 @@ def load_state():
         "last_error_sent_time": None, "last_capital_adjustment_time": None,
         "balance_end_of_last_session": 0.0, "realized_pnl_last_session": 0.0,
         "orphan_position_alerts": {},
-        # <<< NEW >>> Các biến state mới để quản lý rủi ro
+        # <<< NEW >>> Các bi?n state m?i d? qu?n lý r?i ro
         "daily_realized_pnl": 0.0,
         "last_day_checked": ""
     }
@@ -333,7 +333,7 @@ def export_trade_to_csv(trade):
     try:
         df = pd.DataFrame([trade])
         df.to_csv(TRADE_HISTORY_CSV, mode='a', header=not os.path.exists(TRADE_HISTORY_CSV), index=False)
-    except Exception as e: logger.error(f"Lỗi xuất CSV: {e}")
+    except Exception as e: logger.error(f"L?i xu?t CSV: {e}")
 
 def get_current_pnl(trade, current_price):
     if not current_price or trade['entry_price'] <= 0: return 0.0, 0.0
@@ -357,12 +357,12 @@ def send_discord_message(content: str, force: bool = False, is_error: bool = Fal
         else: current_chunk += ("\n" + line) if current_chunk else line
     if current_chunk: chunks.append(current_chunk)
     for i, chunk in enumerate(chunks):
-        content_to_send = f"*(Phần {i+1}/{len(chunks)})*\n{chunk}" if len(chunks) > 1 else chunk
+        content_to_send = f"*(Ph?n {i+1}/{len(chunks)})*\n{chunk}" if len(chunks) > 1 else chunk
         try:
             requests.post(webhook_url, json={"content": content_to_send}, timeout=15).raise_for_status()
             if i < len(chunks) - 1: time.sleep(DISCORD_CONFIG["CHUNK_DELAY_SECONDS"])
         except requests.exceptions.RequestException as e:
-            logger.error(f"Lỗi gửi Discord: {e}")
+            logger.error(f"L?i g?i Discord: {e}")
             break
 
 def build_dynamic_alert_text(state: Dict, equity: float) -> str:
@@ -370,35 +370,31 @@ def build_dynamic_alert_text(state: Dict, equity: float) -> str:
     initial_capital = state.get('initial_capital', 1.0)
     pnl_total_usd = equity - initial_capital
     pnl_total_percent = (pnl_total_usd / initial_capital) * 100 if initial_capital > 0 else 0
-    pnl_icon = "🟢" if pnl_total_usd >= 0 else "🔴"
-    
-    # <<< NEW >>> Thêm thông tin PnL ngày vào báo cáo
+    pnl_icon = "??" if pnl_total_usd >= 0 else "??"
     daily_pnl = state.get('daily_realized_pnl', 0.0)
-    daily_pnl_icon = "🟢" if daily_pnl >= 0 else "🔴"
-    daily_pnl_str = f"| ☀️ PnL Ngày: {daily_pnl_icon} **${daily_pnl:,.2f}**"
-    
-    header = f"💰 Vốn BĐ: **${initial_capital:,.2f}** | 📊 Equity: **${equity:,.2f}** | 📈 PnL Tổng: {pnl_icon} **${pnl_total_usd:,.2f} ({pnl_total_percent:+.2f}%)** {daily_pnl_str}"
-    lines = [f"💡 **CẬP NHẬT ĐỘNG EXNESS BOT** - `{now_vn_str}`", header]
-
+    daily_pnl_icon = "??" if daily_pnl >= 0 else "??"
+    daily_pnl_str = f"| ?? PnL Ngày: {daily_pnl_icon} **${daily_pnl:,.2f}**"
+    header = f"?? V?n BÐ: **${initial_capital:,.2f}** | ?? Equity: **${equity:,.2f}** | ?? PnL T?ng: {pnl_icon} **${pnl_total_usd:,.2f} ({pnl_total_percent:+.2f}%)** {daily_pnl_str}"
+    lines = [f"?? **C?P NH?T Ð?NG EXNESS BOT** - `{now_vn_str}`", header]
     session_events = state.get('session_events', [])
     if session_events:
-        lines.append(f"\n--- **Sự kiện gần đây** ---")
+        lines.append(f"\n--- **S? ki?n g?n dây** ---")
         lines.extend([f"    - {event}" for event in session_events])
-
-    lines.append(f"\n--- **Vị thế đang mở ({len(state.get('active_trades', []))})** ---")
+    lines.append(f"\n--- **V? th? dang m? ({len(state.get('active_trades', []))})** ---")
     if not state.get('active_trades'):
-        lines.append("    (Không có vị thế nào)")
+        lines.append("    (Không có v? th? nào)")
     else:
         for trade in sorted(state.get('active_trades', []), key=lambda x: x.get('entry_time', '')):
             tick = mt5.symbol_info_tick(trade['symbol'])
             if not tick: continue
             current_price = tick.bid if trade['type'] == "LONG" else tick.ask
             pnl_usd, pnl_percent = get_current_pnl(trade, current_price)
-            icon_trade = "🟢" if pnl_usd >= 0 else "🔴"
+            icon_trade = "??" if pnl_usd >= 0 else "??"
             holding_hours = (datetime.now(VIETNAM_TZ) - datetime.fromisoformat(trade['entry_time'])).total_seconds() / 3600
-            lines.append(f"    {icon_trade} **{trade['symbol']}** ({trade['type']}) | PnL: **${pnl_usd:+.2f} ({pnl_percent:+.2f}%)** | Giữ: `{holding_hours:.1f}h`")
+            lines.append(f"    {icon_trade} **{trade['symbol']}** ({trade['type']}) | PnL: **${pnl_usd:+.2f} ({pnl_percent:+.2f}%)** | Gi?: `{holding_hours:.1f}h`")
     lines.append("\n====================================")
     return "\n".join(lines)
+
 
 def should_send_report(state: Dict, equity: Optional[float]) -> Optional[str]:
     if not DYNAMIC_ALERT_CONFIG.get("ENABLED", False) or equity is None:
@@ -473,19 +469,34 @@ def update_scores_for_active_trades():
 
 def determine_market_zone(indicators):
     scores = {LEADING_ZONE: 0, COINCIDENT_ZONE: 0, LAGGING_ZONE: 0, NOISE_ZONE: 0}
-    adx, bb_width, trend = indicators.get('adx', 20), indicators.get('bb_width', 0), indicators.get('trend', "sideways")
-    if adx < 20: scores[NOISE_ZONE] += 3
-    if adx > 25 and trend != "sideways": scores[LAGGING_ZONE] += 2.5
+    adx = indicators.get('adx', 20)
+    ema_9 = indicators.get('ema_9', 0)
+    ema_20 = indicators.get('ema_20', 0)
+    ema_50 = indicators.get('ema_50', 0)
+    bb_width = indicators.get('bb_width', 0)
+    ema_diff_pct = abs((ema_9 - ema_20) / ema_20) * 100 if ema_20 > 0 else 0
+    if adx < 22 and ema_diff_pct < 0.08:
+        scores[NOISE_ZONE] += 2.5
+    is_trending_up = ema_9 > ema_20 and ema_20 > ema_50
+    is_trending_down = ema_9 < ema_20 and ema_20 < ema_50
+    if is_trending_up or is_trending_down:
+        scores[LAGGING_ZONE] += 2.0
+        if adx > 25:
+            scores[LAGGING_ZONE] += 1.5
+    if indicators.get('breakout_signal', "none") != "none":
+        scores[COINCIDENT_ZONE] += 3.0
+    if indicators.get('macd_cross', "neutral") not in ["neutral", "no_cross"]:
+        scores[COINCIDENT_ZONE] += 2.0
+    if indicators.get('candle_pattern') in ["bullish_engulfing", "bearish_engulfing"]:
+        scores[COINCIDENT_ZONE] += 1.5
     df = price_dataframes.get(indicators.get('symbol'), {}).get(indicators.get('interval'), pd.DataFrame())
     if not df.empty and 'bb_width' in df.columns and not df['bb_width'].isna().all():
-        if bb_width < df['bb_width'].quantile(0.15): scores[LEADING_ZONE] += 2.5
-    if indicators.get('breakout_signal', "none") != "none": scores[COINCIDENT_ZONE] += 3
-    if indicators.get('macd_cross', "neutral") not in ["neutral", "no_cross"]: scores[COINCIDENT_ZONE] += 2
-    ema_12, ema_26, ema_cross = indicators.get('ema_12', 0), indicators.get('ema_26', 0), indicators.get('ema_cross', 'none')
-    if ema_cross in ['bullish', 'bearish']: scores[COINCIDENT_ZONE] += 2.5
-    elif ema_12 > ema_26 and trend == 'uptrend': scores[LAGGING_ZONE] += 2
-    elif ema_12 < ema_26 and trend == 'downtrend': scores[LAGGING_ZONE] += 2
-    return max(scores, key=scores.get) if any(v > 0 for v in scores.values()) else NOISE_ZONE
+        if bb_width < df['bb_width'].quantile(0.2):
+            scores[LEADING_ZONE] += 2.5
+    if not any(v > 0 for v in scores.values()):
+        return NOISE_ZONE
+    return max(scores, key=scores.get)
+
 
 def get_mtf_adjustment_coefficient(symbol, target_interval, trade_type):
     if not MTF_ANALYSIS_CONFIG["ENABLED"]: return 1.0
@@ -557,7 +568,7 @@ def is_momentum_confirmed(symbol, interval, direction="LONG"):
             if price_condition_met and volume_condition_met: good_candles_count += 1
         return good_candles_count >= required_candles
     except Exception as e:
-        logger.error(f"Lỗi is_momentum_confirmed: {e}")
+        logger.error(f"L?i is_momentum_confirmed: {e}")
         return True
 
 def manage_dynamic_capital():
@@ -568,7 +579,7 @@ def manage_dynamic_capital():
     if initial_capital <= 0:
         state.update({'initial_capital': current_equity, 'last_capital_adjustment_time': now_dt.isoformat(),
                       'balance_end_of_last_session': current_balance, 'realized_pnl_last_session': 0.0})
-        logger.info(f"🌱 Thiết lập Vốn Nền tảng ban đầu: ${state['initial_capital']:,.2f}")
+        logger.info(f"?? Thi?t l?p V?n N?n t?ng ban d?u: ${state['initial_capital']:,.2f}")
         save_state()
         return
     balance_prev_session, pnl_prev_session = state.get("balance_end_of_last_session", 0.0), state.get("realized_pnl_last_session", 0.0)
@@ -577,156 +588,115 @@ def manage_dynamic_capital():
         net_deposit = current_balance - expected_balance
         threshold = max(CAPITAL_MANAGEMENT_CONFIG["DEPOSIT_DETECTION_MIN_USD"], state.get("initial_capital", 1) * CAPITAL_MANAGEMENT_CONFIG["DEPOSIT_DETECTION_THRESHOLD_PCT"])
         if abs(net_deposit) > threshold:
-            reason = "Nạp tiền" if net_deposit > 0 else "Rút tiền"
-            logger.info(f"💵 Phát hiện {reason} ròng: ${net_deposit:,.2f}. Cập nhật Vốn Nền tảng.")
+            reason = "N?p ti?n" if net_deposit > 0 else "Rút ti?n"
+            logger.info(f"?? Phát hi?n {reason} ròng: ${net_deposit:,.2f}. C?p nh?t V?n N?n t?ng.")
             state["initial_capital"] = state.get("initial_capital", 0.0) + net_deposit
             state['last_capital_adjustment_time'] = now_dt.isoformat()
-            logger.info(f"    Vốn Nền tảng được cập nhật: ${state['initial_capital']:,.2f}")
+            logger.info(f"    V?n N?n t?ng du?c c?p nh?t: ${state['initial_capital']:,.2f}")
     last_adj_str, cooldown = state.get('last_capital_adjustment_time'), CAPITAL_MANAGEMENT_CONFIG["CAPITAL_ADJUSTMENT_COOLDOWN_HOURS"]
     if last_adj_str and (now_dt - datetime.fromisoformat(last_adj_str)).total_seconds() / 3600 < cooldown: return
     growth_pct = (current_equity / state["initial_capital"] - 1) * 100 if state["initial_capital"] > 0 else 0
     compound_threshold, delever_threshold = CAPITAL_MANAGEMENT_CONFIG["AUTO_COMPOUND_THRESHOLD_PCT"], CAPITAL_MANAGEMENT_CONFIG["AUTO_DELEVERAGE_THRESHOLD_PCT"]
     if growth_pct >= compound_threshold or growth_pct <= delever_threshold:
-        reason = "Lãi kép" if growth_pct >= compound_threshold else "Giảm rủi ro"
-        logger.info(f"💰 Hiệu suất ({growth_pct:+.2f}%) đạt ngưỡng. Lý do: {reason}. Cập nhật Vốn Nền tảng.")
-        logger.info(f"    Vốn cũ: ${state['initial_capital']:,.2f}")
+        reason = "Lãi kép" if growth_pct >= compound_threshold else "Gi?m r?i ro"
+        logger.info(f"?? Hi?u su?t ({growth_pct:+.2f}%) d?t ngu?ng. Lý do: {reason}. C?p nh?t V?n N?n t?ng.")
+        logger.info(f"    V?n cu: ${state['initial_capital']:,.2f}")
         state.update({"initial_capital": current_equity, 'last_capital_adjustment_time': now_dt.isoformat()})
-        logger.info(f"    Vốn Nền tảng MỚI: ${state['initial_capital']:,.2f}")
+        logger.info(f"    V?n N?n t?ng M?I: ${state['initial_capital']:,.2f}")
         save_state()
 
 def find_and_open_new_trades():
     global state
-    # --- BƯỚC 0: KIỂM TRA CÁC "CẦU DAO AN TOÀN" ---
-    # Kiểm tra và reset PnL ngày mới
     today_str = datetime.now(VIETNAM_TZ).strftime('%Y-%m-%d')
     last_day_checked = state.get('last_day_checked', '')
     if today_str != last_day_checked:
-        logger.info(f"☀️  Ngày mới ({today_str}). Reset bộ đếm PnL ngày.")
+        logger.info(f"??  Ngày m?i ({today_str}). Reset b? d?m PnL ngày.")
         state['daily_realized_pnl'] = 0.0
         state['last_day_checked'] = today_str
-
-    # Kiểm tra giới hạn thua lỗ ngày
     daily_loss_limit_pct = RISK_RULES_CONFIG.get("DAILY_LOSS_LIMIT_PERCENT", -100.0)
     capital_base = state.get('initial_capital', 1)
     daily_loss_limit_usd = capital_base * (daily_loss_limit_pct / 100.0)
     current_daily_pnl = state.get('daily_realized_pnl', 0.0)
-    
     if current_daily_pnl <= daily_loss_limit_usd:
-        logger.warning(f"🛡️  ĐÃ CHẠM NGƯỠNG THUA LỖ NGÀY (${current_daily_pnl:,.2f} / ${daily_loss_limit_usd:,.2f}). Ngừng mở lệnh mới hôm nay.")
+        logger.warning(f"???  ÐÃ CH?M NGU?NG THUA L? NGÀY (${current_daily_pnl:,.2f} / ${daily_loss_limit_usd:,.2f}). Ng?ng m? l?nh m?i hôm nay.")
         return
-
-    # --- BƯỚC 1: KIỂM TRA ĐIỀU KIỆN TỔNG THỂ ---
     active_trades = state.get("active_trades", [])
     if len(active_trades) >= RISK_RULES_CONFIG["MAX_ACTIVE_TRADES"]:
-        logger.debug("Đã đạt giới hạn %d lệnh mở. Bỏ qua quét.", RISK_RULES_CONFIG["MAX_ACTIVE_TRADES"])
+        logger.debug("Ðã d?t gi?i h?n %d l?nh m?. B? qua quét.", RISK_RULES_CONFIG["MAX_ACTIVE_TRADES"])
         return
-        
     account_info = connector.get_account_info()
     if not account_info: return
-    
     current_total_risk_usd = sum(t.get('risk_amount_usd', 0) for t in active_trades)
     risk_limit_pct = RISK_RULES_CONFIG["MAX_TOTAL_RISK_EXPOSURE_PERCENT"]
     risk_limit_usd = account_info['equity'] * (risk_limit_pct / 100)
-    
     if current_total_risk_usd >= risk_limit_usd:
-        logger.debug("Đã đạt giới hạn tổng rủi ro (%.2f/%.2f USD). Bỏ qua quét.", current_total_risk_usd, risk_limit_usd)
+        logger.debug("Ðã d?t gi?i h?n t?ng r?i ro (%.2f/%.2f USD). B? qua quét.", current_total_risk_usd, risk_limit_usd)
         return
-        
-    # <<< NEW >>> Đếm số lệnh đang mở theo mỗi hướng
     max_per_direction = RISK_RULES_CONFIG.get("MAX_TRADES_PER_DIRECTION", 5)
     long_count = sum(1 for t in active_trades if t['type'] == 'LONG')
     short_count = sum(1 for t in active_trades if t['type'] == 'SHORT')
-
-    # --- BƯỚC 2: THU THẬP TẤT CẢ CƠ HỘI ---
     opportunities, now_vn, cooldown_map = [], datetime.now(VIETNAM_TZ), state.get('cooldown_until', {})
-    
     for symbol in GENERAL_CONFIG["SYMBOLS_TO_SCAN"]:
         if any(t['symbol'] == symbol for t in active_trades): continue
         cooldown_str = cooldown_map.get(symbol, {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"])
         if cooldown_str and now_vn < datetime.fromisoformat(cooldown_str): continue
         indicators = indicator_results.get(symbol, {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"])
         if not indicators: continue
-            
         decision = get_advisor_decision(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], indicators, {"WEIGHTS": {'tech': 1.0, 'context': 0.0, 'ai': 0.0}})
         raw_score = decision.get('final_score', 0.0)
         market_zone, trade_type = determine_market_zone(indicators), "LONG" if raw_score > 0 else "SHORT"
-        
         for tactic_name, tactic_cfg in TACTICS_LAB.items():
             if tactic_cfg["TRADE_TYPE"] != trade_type: continue
             if market_zone not in tactic_cfg.get("OPTIMAL_ZONE", []): continue
-            
             mtf_coeff = get_mtf_adjustment_coefficient(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], trade_type)
             ez_coeff = 1.0
             if tactic_cfg.get("USE_EXTREME_ZONE_FILTER", False):
                 ez_coeff = get_extreme_zone_adjustment_coefficient(indicators, GENERAL_CONFIG["MAIN_TIMEFRAME"])
-            
             final_score = raw_score * mtf_coeff * ez_coeff
-            
             if cooldown_str and abs(final_score) < GENERAL_CONFIG["OVERRIDE_COOLDOWN_SCORE"]: continue
-                
             opportunities.append({
-                "symbol": symbol, "score": final_score, "raw_score": raw_score, 
-                "tactic_name": tactic_name, "tactic_cfg": tactic_cfg, 
-                "indicators": indicators, "zone": market_zone, 
+                "symbol": symbol, "score": final_score, "raw_score": raw_score,
+                "tactic_name": tactic_name, "tactic_cfg": tactic_cfg,
+                "indicators": indicators, "zone": market_zone,
                 "mtf_coeff": mtf_coeff, "ez_coeff": ez_coeff
             })
-
-    # --- BƯỚC 3: SẮP XẾP VÀ ĐÁNH GIÁ CHI TIẾT ---
     if not opportunities:
-        logger.info("=> Không tìm thấy bất kỳ cơ hội nào từ các cặp tiền được quét.")
+        logger.info("=> Không tìm th?y b?t k? co h?i nào t? các c?p ti?n du?c quét.")
         return
-    
-    top_n = GENERAL_CONFIG["TOP_N_OPPORTUNITIES_TO_CHECK"]
     min_score_threshold = GENERAL_CONFIG["MIN_RAW_SCORE_THRESHOLD"]
-    qualified_opps = [opp for opp in opportunities if abs(opp['raw_score']) >= min_score_threshold]
-
-    if not qualified_opps:
-        logger.info(f"=> Không có cơ hội nào đạt ngưỡng điểm tối thiểu ({min_score_threshold}).")
-        top_rejected = sorted(opportunities, key=lambda x: abs(x['raw_score']), reverse=True)[:top_n]
-        logger.info(f"---[📉 Top {len(top_rejected)} cơ hội bị loại vì điểm thấp]---")
-        for i, opp in enumerate(top_rejected):
-             logger.info(f"  #{i+1}: {opp['symbol']} | Tactic: {opp['tactic_name']} | Điểm gốc: {opp['raw_score']:.2f} (Không đủ)")
-        return
-
-    sorted_opps = sorted(qualified_opps, key=lambda x: abs(x['score']), reverse=True)[:top_n]
-    logger.info(f"---[🏆 Tìm thấy {len(qualified_opps)} cơ hội đạt chuẩn. Xem xét {len(sorted_opps)} cơ hội tốt nhất (tối đa {top_n})]---")
-    
+    top_n = GENERAL_CONFIG["TOP_N_OPPORTUNITIES_TO_CHECK"]
+    all_sorted_opps = sorted(opportunities, key=lambda x: abs(x['score']), reverse=True)
+    top_opps_to_log = all_sorted_opps[:top_n]
+    logger.info(f"---[?? Phân tích {len(top_opps_to_log)} co h?i hàng d?u (t? t?ng s? {len(opportunities)})]---")
     found_trade_to_open = False
-    for i, opp in enumerate(sorted_opps):
+    for i, opp in enumerate(top_opps_to_log):
         score, entry_thresh, tactic_name, symbol = opp['score'], opp['tactic_cfg']['ENTRY_SCORE'], opp['tactic_name'], opp['symbol']
-        
         log_prefix = f"  #{i+1}: {symbol} | Tactic: {tactic_name}"
-        log_score = f"| Gốc: {opp['raw_score']:.2f} | Final: {score:.2f} (Ngưỡng: {entry_thresh})"
-        log_adjustments = f"      Chi tiết điều chỉnh: [MTF: x{opp['mtf_coeff']:.2f}] [Vùng Cực đoan: x{opp['ez_coeff']:.2f}]"
-        
+        log_score = f"| G?c: {opp['raw_score']:.2f} | Final: {score:.2f} (Ngu?ng: {entry_thresh})"
+        log_adjustments = f"      Chi ti?t di?u ch?nh: [MTF: x{opp['mtf_coeff']:.2f}] [Vùng C?c doan: x{opp['ez_coeff']:.2f}]"
         logger.info(log_prefix + log_score)
         logger.info(log_adjustments)
-
-        # <<< NEW >>> Kiểm tra giới hạn lệnh cùng hướng
+        if abs(opp['raw_score']) < min_score_threshold:
+            logger.info(f"      => ?? Không d?t ngu?ng di?m t?i thi?u ({min_score_threshold}). B? qua.")
+            continue
         trade_type = opp['tactic_cfg']['TRADE_TYPE']
         if trade_type == "LONG" and long_count >= max_per_direction:
-            logger.info(f"      => 📉 Đã đạt giới hạn {max_per_direction} lệnh LONG. Bỏ qua.")
+            logger.info(f"      => ?? Ðã d?t gi?i h?n {max_per_direction} l?nh LONG. B? qua.")
             continue
         if trade_type == "SHORT" and short_count >= max_per_direction:
-            logger.info(f"      => 📉 Đã đạt giới hạn {max_per_direction} lệnh SHORT. Bỏ qua.")
+            logger.info(f"      => ?? Ðã d?t gi?i h?n {max_per_direction} l?nh SHORT. B? qua.")
             continue
-
         passes_score = (score >= entry_thresh) if score > 0 else (score <= entry_thresh)
         if not passes_score:
-            logger.info("      => 📉 Không đạt ngưỡng điểm. Xem xét cơ hội tiếp theo...")
+            logger.info("      => ?? Không d?t ngu?ng di?m. Xem xét co h?i ti?p theo...")
             continue
-            
         passes_momentum = not opp['tactic_cfg']['USE_MOMENTUM_FILTER'] or is_momentum_confirmed(symbol, GENERAL_CONFIG["MAIN_TIMEFRAME"], opp['tactic_cfg']['TRADE_TYPE'])
         if not passes_momentum:
-            logger.info("      => 📉 Lọc động lượng thất bại. Xem xét cơ hội tiếp theo...")
+            logger.info("      => ?? L?c d?ng lu?ng th?t b?i. Xem xét co h?i ti?p theo...")
             continue
-            
         risk_dist_est = opp['indicators'].get('atr', 0) * opp['tactic_cfg'].get("ATR_SL_MULTIPLIER", 2.0)
-        
-        # <<< NEW >>> Tính toán rủi ro linh hoạt theo Market Zone và Phiên Giao Dịch
         base_risk_pct = RISK_RULES_CONFIG["RISK_PER_TRADE_PERCENT"]
         zone_multiplier = ZONE_BASED_POLICIES.get(opp['zone'], {}).get("CAPITAL_RISK_MULTIPLIER", 1.0)
-        
         session_multiplier = 1.0
         if SESSION_RISK_CONFIG["ENABLED"]:
             current_hour = datetime.now(VIETNAM_TZ).hour
@@ -734,48 +704,46 @@ def find_and_open_new_trades():
             active_cfg = SESSION_RISK_CONFIG["ACTIVE_HOURS"]
             if quiet_cfg["START"] <= current_hour < quiet_cfg["END"]:
                 session_multiplier = quiet_cfg["MULTIPLIER"]
-                logger.info(f"      => 🌙 Phiên Á yên tĩnh. Giảm rủi ro (x{session_multiplier:.2f}).")
+                logger.info(f"      => ?? Phiên Á yên tinh. Gi?m r?i ro (x{session_multiplier:.2f}).")
             elif active_cfg["START"] <= current_hour < active_cfg["END"]:
                 session_multiplier = active_cfg["MULTIPLIER"]
-                logger.info(f"      => ☀️ Phiên Âu/Mỹ sôi động. Tăng rủi ro (x{session_multiplier:.2f}).")
-
+                logger.info(f"      => ?? Phiên Âu/M? sôi d?ng. Tang r?i ro (x{session_multiplier:.2f}).")
         adj_risk_pct = base_risk_pct * zone_multiplier * session_multiplier
         risk_amount_usd_est = capital_base * (adj_risk_pct / 100)
-        
         passes_risk = (current_total_risk_usd + risk_amount_usd_est) <= risk_limit_usd
         if not passes_risk:
-            logger.info("      => 📉 Vượt giới hạn tổng rủi ro. Xem xét cơ hội tiếp theo...")
+            logger.info("      => ?? Vu?t gi?i h?n t?ng r?i ro. Xem xét co h?i ti?p theo...")
             continue
-            
-        logger.info(f"      => ✅ Đạt mọi điều kiện. Tiến hành đặt lệnh...")
-        execute_trade(opp, adj_risk_pct) # Truyền rủi ro đã điều chỉnh vào hàm
+        logger.info(f"      => ? Ð?t m?i di?u ki?n. Ti?n hành d?t l?nh...")
+        execute_trade(opp, adj_risk_pct)
         found_trade_to_open = True
         break
-    
     if not found_trade_to_open:
-        logger.info(f"  => Không có cơ hội nào trong top {len(sorted_opps)} đạt ngưỡng vào lệnh.")
+        logger.info(f"  => Không có co h?i nào trong top {len(top_opps_to_log)} d?t ngu?ng vào l?nh.")
+
 
 def execute_trade(opportunity, adjusted_risk_percent):
     symbol, tactic_cfg, indicators, score, tactic_name, zone = opportunity['symbol'], opportunity['tactic_cfg'], opportunity['indicators'], opportunity['score'], opportunity['tactic_name'], opportunity['zone']
     capital_base = state.get('initial_capital', connector.get_account_info()['equity'])
     order_type = mt5.ORDER_TYPE_BUY if tactic_cfg["TRADE_TYPE"] == "LONG" else mt5.ORDER_TYPE_SELL
     tick = mt5.symbol_info_tick(symbol)
-    if not tick: return logger.error(f"Không thể lấy giá {symbol}")
+    if not tick: return logger.error(f"Không th? l?y giá {symbol}")
     entry_price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
     risk_dist = indicators.get('atr', 0) * tactic_cfg.get("ATR_SL_MULTIPLIER", 2.0)
-    if risk_dist <= 0: return logger.warning(f"ATR không hợp lệ cho {symbol}")
+    if risk_dist <= 0: return logger.warning(f"ATR không h?p l? cho {symbol}")
     sl_price = entry_price - risk_dist if order_type == mt5.ORDER_TYPE_BUY else entry_price + risk_dist
     tp_price = entry_price + (risk_dist * tactic_cfg.get("RR", 1.5)) if order_type == mt5.ORDER_TYPE_BUY else entry_price - (risk_dist * tactic_cfg.get("RR", 1.5))
     
-    risk_amount_usd = capital_base * (adjusted_risk_percent / 100) # Sử dụng rủi ro đã được điều chỉnh
+    risk_amount_usd = capital_base * (adjusted_risk_percent / 100) # S? d?ng r?i ro dã du?c di?u ch?nh
     
-    lot_size = connector.calculate_lot_size(symbol, risk_amount_usd, sl_price)
-    if lot_size is None or lot_size <= 0: return logger.warning(f"Lot size = {lot_size} không hợp lệ cho {symbol}")
+    lot_size = connector.calculate_lot_size(symbol, risk_amount_usd, sl_price, order_type)
+    if lot_size is None or lot_size <= 0: return logger.warning(f"Lot size = {lot_size} không h?p l? cho {symbol}")
     
     result = None
     retry_limit = RISK_RULES_CONFIG.get("OPEN_TRADE_RETRY_LIMIT", 3)
     for attempt in range(retry_limit):
-        result = connector.place_order(symbol, order_type, lot_size, sl_price, tp_price, magic_number=GENERAL_CONFIG["MAGIC_NUMBER"])
+        comment = f"exness_bot_{tactic_name}" # T?o m?t comment d?ng
+        result = connector.place_order(symbol, order_type, lot_size, sl_price, tp_price, magic_number=GENERAL_CONFIG["MAGIC_NUMBER"], comment=comment)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE: break
         time.sleep(RISK_RULES_CONFIG['RETRY_DELAY_SECONDS'])
     if result and result.retcode == mt5.TRADE_RETCODE_DONE:
@@ -793,17 +761,17 @@ def execute_trade(opportunity, adjusted_risk_percent):
         state.setdefault("active_trades", []).append(new_trade)
         state['session_has_events'] = True
         event_time = datetime.now(VIETNAM_TZ).strftime('%H:%M')
-        event_msg = f"[{event_time}] 🔥 Mở lệnh {tactic_cfg['TRADE_TYPE']} {symbol} | Tactic: {tactic_name}"
+        event_msg = f"[{event_time}] ?? M? l?nh {tactic_cfg['TRADE_TYPE']} {symbol} | Tactic: {tactic_name}"
         state.setdefault('session_events', []).append(event_msg)
     else:
-        error_msg = f"Đặt lệnh {symbol} thất bại sau {retry_limit} lần. Retcode: {result.retcode if result else 'N/A'}"
+        error_msg = f"Ð?t l?nh {symbol} th?t b?i sau {retry_limit} l?n. Retcode: {result.retcode if result else 'N/A'}"
         logger.error(error_msg)
-        send_discord_message(f"🚨 LỖI ĐẶT LỆNH: {error_msg}", is_error=True, force=True)
+        send_discord_message(f"?? L?I Ð?T L?NH: {error_msg}", is_error=True, force=True)
 
 def close_trade_on_mt5(trade, reason, close_pct=1.0):
     position = next((p for p in connector.get_all_open_positions() if p.ticket == trade['ticket_id']), None)
     if not position:
-        logger.warning(f"Không tìm thấy vị thế #{trade['ticket_id']} để đóng ({reason})")
+        logger.warning(f"Không tìm th?y v? th? #{trade['ticket_id']} d? dóng ({reason})")
         return False
     lot_to_close = round(position.volume * close_pct, 2)
     info = mt5.symbol_info(trade['symbol'])
@@ -818,9 +786,9 @@ def close_trade_on_mt5(trade, reason, close_pct=1.0):
         if result: break
         time.sleep(RISK_RULES_CONFIG['RETRY_DELAY_SECONDS'])
     if not result:
-        error_msg = f"Đóng lệnh {trade['symbol']} thất bại sau {retry_limit} lần."
+        error_msg = f"Ðóng l?nh {trade['symbol']} th?t b?i sau {retry_limit} l?n."
         logger.error(error_msg)
-        send_discord_message(f"🚨 LỖI ĐÓNG LỆNH: {error_msg}", is_error=True, force=True)
+        send_discord_message(f"?? L?I ÐÓNG L?NH: {error_msg}", is_error=True, force=True)
         return False
     state['session_has_events'] = True
     time.sleep(2)
@@ -835,7 +803,7 @@ def close_trade_on_mt5(trade, reason, close_pct=1.0):
     if lot_to_close >= trade['lot_size'] * 0.99:
         total_pnl_for_trade = sum(d.profit for d in deals if d.position_id == trade['ticket_id'])
         
-        # <<< NEW >>> Cập nhật PnL ngày khi đóng toàn bộ lệnh
+        # <<< NEW >>> C?p nh?t PnL ngày khi dóng toàn b? l?nh
         pnl_to_record = total_pnl_for_trade - sum(trade.get('partial_pnl_details', {}).values())
         state['daily_realized_pnl'] = state.get('daily_realized_pnl', 0.0) + pnl_to_record
         state['session_realized_pnl'] = state.get('session_realized_pnl', 0.0) + pnl_to_record
@@ -845,17 +813,17 @@ def close_trade_on_mt5(trade, reason, close_pct=1.0):
         state.setdefault('trade_history', []).append(trade)
         cooldown_map = state.setdefault('cooldown_until', {}); cooldown_map.setdefault(trade['symbol'], {})[GENERAL_CONFIG["MAIN_TIMEFRAME"]] = (datetime.now(VIETNAM_TZ) + timedelta(hours=GENERAL_CONFIG["TRADE_COOLDOWN_HOURS"])).isoformat()
         export_trade_to_csv(trade)
-        icon = "✅" if total_pnl_for_trade >= 0 else "❌"
-        event_msg = f"[{event_time}] {icon} Đóng lệnh {trade['symbol']} ({reason}) | PnL: ${total_pnl_for_trade:,.2f}"
+        icon = "?" if total_pnl_for_trade >= 0 else "?"
+        event_msg = f"[{event_time}] {icon} Ðóng l?nh {trade['symbol']} ({reason}) | PnL: ${total_pnl_for_trade:,.2f}"
         state.setdefault('session_events', []).append(event_msg)
     else:
-        # <<< NEW >>> Cập nhật PnL ngày khi đóng một phần
+        # <<< NEW >>> C?p nh?t PnL ngày khi dóng m?t ph?n
         state['daily_realized_pnl'] = state.get('daily_realized_pnl', 0.0) + closed_pnl
         state['session_realized_pnl'] = state.get('session_realized_pnl', 0.0) + closed_pnl
         
         trade['partial_pnl_details'][reason] = trade['partial_pnl_details'].get(reason, 0) + closed_pnl
         trade['lot_size'] = round(trade['lot_size'] - lot_to_close, 2)
-        event_msg = f"[{event_time}] 💰 Chốt lời {close_pct*100:.0f}% lệnh {trade['symbol']} ({reason}) | PnL: ${closed_pnl:,.2f}"
+        event_msg = f"[{event_time}] ?? Ch?t l?i {close_pct*100:.0f}% l?nh {trade['symbol']} ({reason}) | PnL: ${closed_pnl:,.2f}"
         state.setdefault('session_events', []).append(event_msg)
     return True
 
@@ -897,14 +865,14 @@ def manage_open_positions():
                     if is_better and abs(new_sl - trade['sl_price']) > (initial_risk_dist * 0.1):
                         if connector.modify_position(trade['ticket_id'], new_sl, trade['tp_price']):
                             trade['sl_price'] = new_sl
-                            logger.info(f"TSL {symbol}: SL được cập nhật lên {format_price(new_sl)}")
+                            logger.info(f"TSL {symbol}: SL du?c c?p nh?t lên {format_price(new_sl)}")
             if tactic_cfg.get("ENABLE_PARTIAL_TP", False) and not trade.get("tp1_hit", False) and pnl_ratio >= tactic_cfg.get("TP1_RR_RATIO", 0.6):
                 if close_trade_on_mt5(trade, "TP1", tactic_cfg.get("TP1_PROFIT_PCT", 0.5)):
                     trade['tp1_hit'] = True
                     new_sl = trade['entry_price']
                     if connector.modify_position(trade['ticket_id'], new_sl, trade['tp_price']):
                         trade['sl_price'] = new_sl
-                        logger.info(f"TP1 {symbol}: Dời SL về entry {format_price(new_sl)}")
+                        logger.info(f"TP1 {symbol}: D?i SL v? entry {format_price(new_sl)}")
         pp_cfg = ACTIVE_TRADE_MANAGEMENT_CONFIG["PROFIT_PROTECTION"]
         if pp_cfg["ENABLED"] and not trade.get('profit_taken', False) and trade['peak_pnl_percent'] >= pp_cfg["MIN_PEAK_PNL_TRIGGER"]:
             if (trade['peak_pnl_percent'] - pnl_percent) >= pp_cfg["PNL_DROP_TRIGGER_PCT"]:
@@ -913,7 +881,7 @@ def manage_open_positions():
                     new_sl = trade['entry_price']
                     if connector.modify_position(trade['ticket_id'], new_sl, trade['tp_price']):
                         trade['sl_price'] = new_sl
-                        logger.info(f"PP {symbol}: Dời SL về entry {format_price(new_sl)}")
+                        logger.info(f"PP {symbol}: D?i SL v? entry {format_price(new_sl)}")
 
 def handle_stale_trades():
     now_vn = datetime.now(VIETNAM_TZ)
@@ -941,12 +909,20 @@ def handle_dca_opportunities():
         if not tick: continue
         current_price = tick.bid if trade['type'] == "LONG" else tick.ask
         last_entry_price = trade['dca_entries'][-1]['price'] if trade.get('dca_entries') else trade['entry_price']
-        price_drop_pct = ((current_price - last_entry_price) / last_entry_price) * 100
-        dca_trigger = DCA_CONFIG.get("TRIGGER_DROP_PCT_BY_TIMEFRAME", {}).get(GENERAL_CONFIG["MAIN_TIMEFRAME"], -3.0)
-        is_triggered = (trade['type'] == 'LONG' and price_drop_pct <= dca_trigger) or (trade['type'] == 'SHORT' and price_drop_pct >= abs(dca_trigger))
-        if not is_triggered: continue
+        
+        # Nâng c?p: Kích ho?t DCA d?a trên ATR thay vì %
+        atr_at_entry = trade.get('atr_at_entry', 0)
+        if atr_at_entry <= 0: continue # B? qua n?u không có ATR h?p l?
+        distance_in_atr = abs(current_price - last_entry_price) / atr_at_entry
+        dca_trigger_atr = 1.5 # C?u hình: Kích ho?t khi giá di ngu?c 1.5 l?n ATR
+        is_going_against = (trade['type'] == 'LONG' and current_price < last_entry_price) or \
+                           (trade['type'] == 'SHORT' and current_price > last_entry_price)
+
+        if not (is_going_against and distance_in_atr >= dca_trigger_atr): continue
+
         score_threshold = DCA_CONFIG["SCORE_MIN_THRESHOLD_LONG"] if trade['type'] == "LONG" else DCA_CONFIG["SCORE_MIN_THRESHOLD_SHORT"]
         if (trade['type'] == "LONG" and trade['last_score'] < score_threshold) or (trade['type'] == "SHORT" and trade['last_score'] > score_threshold): continue
+        
         strategy = DCA_CONFIG.get("STRATEGY", "aggressive")
         multiplier = DCA_CONFIG.get("MULTIPLIERS", {}).get(strategy, 1.0)
         initial_lot_size = trade.get('initial_lot_size', trade['lot_size'])
@@ -954,8 +930,9 @@ def handle_dca_opportunities():
         order_type = mt5.ORDER_TYPE_BUY if trade['type'] == "LONG" else mt5.ORDER_TYPE_SELL
         result = None
         retry_limit = RISK_RULES_CONFIG.get("OPEN_TRADE_RETRY_LIMIT", 3)
+        comment = f"exness_bot_dca_{strategy}"
         for attempt in range(retry_limit):
-            result = connector.place_order(trade['symbol'], order_type, dca_lot_size, 0, 0, magic_number=GENERAL_CONFIG["MAGIC_NUMBER"])
+            result = connector.place_order(trade['symbol'], order_type, dca_lot_size, 0, 0, magic_number=GENERAL_CONFIG["MAGIC_NUMBER"], comment=comment)
             if result and result.retcode == mt5.TRADE_RETCODE_DONE: break
             time.sleep(RISK_RULES_CONFIG['RETRY_DELAY_SECONDS'])
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
@@ -966,19 +943,20 @@ def handle_dca_opportunities():
             new_avg_price = (total_value_before + dca_value) / new_total_lots if new_total_lots > 0 else trade['entry_price']
             trade.update({'entry_price': new_avg_price, 'lot_size': new_total_lots, 'last_dca_time': now.isoformat()})
             event_time = datetime.now(VIETNAM_TZ).strftime('%H:%M')
-            event_msg = f"[{event_time}] 🎯 DCA ({strategy}) {trade['symbol']} | Lot: {dca_lot_size} @ {format_price(result.price)}"
+            event_msg = f"[{event_time}] ?? DCA ({strategy}) {trade['symbol']} | Lot: {dca_lot_size} @ {format_price(result.price)}"
             state.setdefault('session_events', []).append(event_msg)
-        else: logger.error(f"DCA cho {trade['symbol']} thất bại sau {retry_limit} lần thử.")
+        else: logger.error(f"DCA cho {trade['symbol']} th?t b?i sau {retry_limit} l?n th?.")
+
 
 def reconcile_positions():
-    logger.debug("Đối soát vị thế...")
+    logger.debug("Ð?i soát v? th?...")
     bot_tickets = {t['ticket_id'] for t in state.get("active_trades", [])}
     all_mt5_positions = connector.get_all_open_positions()
     mt5_tickets = {p.ticket for p in all_mt5_positions}
     closed_manually = bot_tickets - mt5_tickets
     if closed_manually:
         state['session_has_events'] = True
-        for ticket in closed_manually: logger.warning(f"Vị thế #{ticket} do bot quản lý đã bị đóng thủ công hoặc bởi SL/TP của sàn.")
+        for ticket in closed_manually: logger.warning(f"V? th? #{ticket} do bot qu?n lý dã b? dóng th? công ho?c b?i SL/TP c?a sàn.")
         closed_trades = [t for t in state["active_trades"] if t['ticket_id'] in closed_manually]
         for t in closed_trades: t.update({'status': 'Closed (Manual/Reconciled)', 'exit_time': datetime.now(VIETNAM_TZ).isoformat()})
         state.setdefault("trade_history", []).append(t)
@@ -994,11 +972,11 @@ def reconcile_positions():
                 if (now - last_alert_dt).total_seconds() / 60 < DYNAMIC_ALERT_CONFIG["ALERT_COOLDOWN_MINUTES"]:
                     should_alert = False
             if should_alert:
-                msg = (f"⚠️ CẢNH BÁO: Phát hiện vị thế lạ/mồ côi trên tài khoản.\n"
+                msg = (f"?? C?NH BÁO: Phát hi?n v? th? l?/m? côi trên tài kho?n.\n"
                        f"    - Ticket: `{pos.ticket}` | Symbol: `{pos.symbol}`\n"
                        f"    - Type: `{'BUY' if pos.type == 0 else 'SELL'}` | Lot: `{pos.volume}`\n"
-                       f"    - Magic: `{pos.magic}` (khác với magic của bot: {GENERAL_CONFIG['MAGIC_NUMBER']})")
-                logger.warning(f"Phát hiện vị thế lạ: Ticket #{pos.ticket} ({pos.symbol})")
+                       f"    - Magic: `{pos.magic}` (khác v?i magic c?a bot: {GENERAL_CONFIG['MAGIC_NUMBER']})")
+                logger.warning(f"Phát hi?n v? th? l?: Ticket #{pos.ticket} ({pos.symbol})")
                 send_discord_message(msg, force=True, is_error=True)
                 orphan_alerts[str(pos.ticket)] = now.isoformat()
 
@@ -1026,32 +1004,32 @@ def build_daily_summary():
             if not losing_trades_df.empty: avg_loss_str = f"${losing_trades_df['pnl_usd'].mean():,.2f}"
             total_profit = winning_trades_df['pnl_usd'].sum()
             total_loss = abs(losing_trades_df['pnl_usd'].sum())
-            pf_str = f"{total_profit / total_loss:.2f}" if total_loss > 0 else "∞"
+            pf_str = f"{total_profit / total_loss:.2f}" if total_loss > 0 else "8"
             if 'opened_by_tactic' in closed_trades_df.columns:
                 pnl_by_tactic = closed_trades_df.groupby('opened_by_tactic')['pnl_usd'].agg(['sum', 'count'])
-                pnl_by_tactic_report.append("\n--- **Hiệu suất theo Tactic** ---")
+                pnl_by_tactic_report.append("\n--- **Hi?u su?t theo Tactic** ---")
                 for tactic, data in pnl_by_tactic.iterrows():
-                    pnl_by_tactic_report.append(f"  - `{tactic}`: **${data['sum']:+,.2f}** ({int(data['count'])} lệnh)")
-    pnl_summary_line = f"🏆 Win Rate: **{win_rate_str}** | 📈 PF: **{pf_str}** | ✅ PnL Đóng: **${total_pnl_closed:,.2f}**\n"
-    pnl_summary_line += f"🎯 AVG Lãi: **{avg_win_str}** | 🛡️ AVG Lỗ: **{avg_loss_str}**"
+                    pnl_by_tactic_report.append(f"  - `{tactic}`: **${data['sum']:+,.2f}** ({int(data['count'])} l?nh)")
+    pnl_summary_line = f"?? Win Rate: **{win_rate_str}** | ?? PF: **{pf_str}** | ? PnL Ðóng: **${total_pnl_closed:,.2f}**\n"
+    pnl_summary_line += f"?? AVG Lãi: **{avg_win_str}** | ??? AVG L?: **{avg_loss_str}**"
     report = [
-        f"📊 **BÁO CÁO TỔNG KẾT EXNESS BOT** - {datetime.now(VIETNAM_TZ).strftime('%H:%M %d-%m-%Y')}",
-        f"💰 Vốn Nền tảng: **${initial_capital:,.2f}** | 💵 Balance: **${balance:,.2f}**",
-        f"📊 Equity: **${equity:,.2f}** | 📈 PnL Tổng: **${pnl_total_usd:+,.2f} ({pnl_total_percent:+.2f}%)**",
+        f"?? **BÁO CÁO T?NG K?T EXNESS BOT** - {datetime.now(VIETNAM_TZ).strftime('%H:%M %d-%m-%Y')}",
+        f"?? V?n N?n t?ng: **${initial_capital:,.2f}** | ?? Balance: **${balance:,.2f}**",
+        f"?? Equity: **${equity:,.2f}** | ?? PnL T?ng: **${pnl_total_usd:+,.2f} ({pnl_total_percent:+.2f}%)**",
         "\n" + pnl_summary_line, ""
     ]
     active_trades = state.get('active_trades', [])
     if active_trades:
-        report.append(f"--- **Vị thế đang mở ({len(active_trades)})** ---")
+        report.append(f"--- **V? th? dang m? ({len(active_trades)})** ---")
         for trade in active_trades:
             tick = mt5.symbol_info_tick(trade['symbol'])
             if tick:
                 current_price = tick.bid if trade['type'] == "LONG" else tick.ask
                 pnl_usd, _ = get_current_pnl(trade, current_price)
-                icon = "🟢" if pnl_usd >= 0 else "🔴"
+                icon = "??" if pnl_usd >= 0 else "??"
                 holding_hours = (datetime.now(VIETNAM_TZ) - datetime.fromisoformat(trade['entry_time'])).total_seconds() / 3600
-                report.append(f"  {icon} **{trade['symbol']}** ({trade['type']}) | PnL: **${pnl_usd:+.2f}** | Giữ: {holding_hours:.1f}h")
-    else: report.append("Không có vị thế nào đang mở")
+                report.append(f"  {icon} **{trade['symbol']}** ({trade['type']}) | PnL: **${pnl_usd:+.2f}** | Gi?: {holding_hours:.1f}h")
+    else: report.append("Không có v? th? nào dang m?")
     if pnl_by_tactic_report: report.extend(pnl_by_tactic_report)
     return '\n'.join(report)
 
@@ -1091,7 +1069,7 @@ def main_loop():
             if (current_minute % interval_minutes == 0) and (current_minute != last_heavy_task_minute):
                 last_heavy_task_minute = current_minute
                 
-                logger.info(f"--- [Chu kỳ {interval_minutes}m] Bắt đầu quét và phân tích... ---")
+                logger.info(f"--- [Chu k? {interval_minutes}m] B?t d?u quét và phân tích... ---")
                 manage_dynamic_capital()
                 load_all_indicators()
                 update_scores_for_active_trades()
@@ -1104,10 +1082,10 @@ def main_loop():
                 
             time.sleep(GENERAL_CONFIG["LOOP_SLEEP_SECONDS"])
         except KeyboardInterrupt:
-            logger.info("Phát hiện KeyboardInterrupt. Đang dừng bot...")
+            logger.info("Phát hi?n KeyboardInterrupt. Ðang d?ng bot...")
             raise
         except Exception as e:
-            logger.error(f"Lỗi nghiêm trọng trong vòng lặp chính: {e}\n```{traceback.format_exc()}```")
+            logger.error(f"L?i nghiêm tr?ng trong vòng l?p chính: {e}\n```{traceback.format_exc()}```")
             now_dt = datetime.now(VIETNAM_TZ)
             last_alert_str = state.get('last_critical_error_alert_time')
             should_send_alert = True
@@ -1117,11 +1095,11 @@ def main_loop():
                 cooldown_period = GENERAL_CONFIG.get("CRITICAL_ERROR_COOLDOWN_MINUTES", 60)
                 if minutes_since < cooldown_period:
                     should_send_alert = False
-                    logger.info(f"Lỗi lặp lại trong thời gian cooldown. Tạm thời không gửi thông báo Discord.")
+                    logger.info(f"L?i l?p l?i trong th?i gian cooldown. T?m th?i không g?i thông báo Discord.")
             if should_send_alert:
-                error_message = f"Lỗi nghiêm trọng trong vòng lặp chính: {e}\n```{traceback.format_exc()}```"
-                logger.critical(f"Gửi thông báo lỗi nghiêm trọng đến Discord: {e}")
-                send_discord_message(f"🚨 LỖI NGHIÊM TRỌNG: {error_message}", is_error=True, force=True)
+                error_message = f"L?i nghiêm tr?ng trong vòng l?p chính: {e}\n```{traceback.format_exc()}```"
+                logger.critical(f"G?i thông báo l?i nghiêm tr?ng d?n Discord: {e}")
+                send_discord_message(f"?? L?I NGHIÊM TR?NG: {error_message}", is_error=True, force=True)
                 state['last_critical_error_alert_time'] = now_dt.isoformat()
                 save_state()
             time.sleep(60)
@@ -1129,13 +1107,13 @@ def main_loop():
 def run_bot():
     global connector, state
     setup_logging()
-    logger.info("=== KHỞI ĐỘNG EXNESS BOT V2.4 (THE GUARDIAN) ===")
+    logger.info("=== KH?I Ð?NG EXNESS BOT V2.4 (THE GUARDIAN) ===")
     connector = ExnessConnector()
     if not connector.connect():
-        logger.critical("Không thể kết nối MT5!")
+        logger.critical("Không th? k?t n?i MT5!")
         return
     if not acquire_lock():
-        logger.info("Bot đang chạy ở phiên khác. Thoát.")
+        logger.info("Bot dang ch?y ? phiên khác. Thoát.")
         return
     try:
         load_state()
@@ -1146,17 +1124,17 @@ def run_bot():
                 state[key] = state.get(key, 0.0 if 'pnl' in key else ({} if 'alerts' in key else False))
 
         account_info = connector.get_account_info()
-        if not account_info: raise ConnectionError("Không thể lấy thông tin tài khoản khi khởi động.")
+        if not account_info: raise ConnectionError("Không th? l?y thông tin tài kho?n khi kh?i d?ng.")
         if state.get('initial_capital', 0) <= 0:
             state['initial_capital'] = account_info['equity']
             state['balance_end_of_last_session'] = account_info['balance']
             save_state()
-        logger.info(f"✅ Đã kết nối MT5 thành công. Tài khoản #{account_info['login']} | Vốn nền tảng: ${state.get('initial_capital', 0):,.2f}")
+        logger.info(f"? Ðã k?t n?i MT5 thành công. Tài kho?n #{account_info['login']} | V?n n?n t?ng: ${state.get('initial_capital', 0):,.2f}")
         main_loop()
     except KeyboardInterrupt:
-        logger.info("Đã dừng bot theo yêu cầu người dùng.")
+        logger.info("Ðã d?ng bot theo yêu c?u ngu?i dùng.")
     except Exception as e:
-        logger.critical(f"Lỗi không thể phục hồi: {e}", exc_info=True)
+        logger.critical(f"L?i không th? ph?c h?i: {e}", exc_info=True)
     finally:
         if connector and connector._is_connected:
             final_account_info = connector.get_account_info()
@@ -1166,7 +1144,7 @@ def run_bot():
         save_state()
         release_lock()
         if connector: connector.shutdown()
-        logger.info("=== BOT ĐÃ DỪNG ===")
+        logger.info("=== BOT ÐÃ D?NG ===")
 
 if __name__ == "__main__":
     run_bot()
