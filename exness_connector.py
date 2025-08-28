@@ -1,21 +1,25 @@
 # -*- coding: utf-8 -*-
 # exness_connector.py
-# Version: 1.1.0 - Upgraded
-# Date: 2025-08-25
+# Version: 2.0.0 - The Guardian
+# Date: 2025-08-27
 """
-CHANGELOG (v1.1.0):
-- REFACTOR (calculate_lot_size): Hàm giờ đây yêu cầu `order_type` làm tham số đầu vào trực tiếp, giúp logic rõ ràng và tránh suy luận ngầm.
-- REFACTOR (place_order): Thêm tham số `comment` để linh hoạt hơn, không còn hardcode comment trong hàm.
-- ENHANCEMENT (Logging): Cải thiện các thông báo log để chi tiết và hữu ích hơn trong việc gỡ lỗi.
-- ENHANCEMENT (Type Hinting): Thêm các gợi ý kiểu dữ liệu (type hints) để mã nguồn dễ đọc và bảo trì hơn.
+CHANGELOG (v2.0.0):
+- REFACTOR (calculate_lot_size): Tái cấu trúc hoàn toàn hàm tính toán lot size để có độ tin cậy và an toàn tối đa.
+    - FEATURE (Proactive SL Adjustment): Tích hợp cơ chế tự động điều chỉnh Stop Loss nếu nó được đặt quá gần giá,
+      tránh các lỗi từ chối lệnh không cần thiết (ý tưởng của người dùng).
+    - ENHANCEMENT (Calculation Focus): Loại bỏ phương pháp tính toán thủ công (fallback) có rủi ro sai lệch với các cặp tiền
+      phức tạp. Giờ đây, hàm sẽ tập trung 100% vào việc lấy kết quả chính xác từ hàm `mt5.order_calc_profit`.
+    - FEATURE (Emergency Fallback): Nếu việc tính toán mức lỗ thất bại hoàn toàn, bot sẽ sử dụng lot size tối thiểu
+      và ghi một log ở mức CRITICAL để người dùng được cảnh báo ngay lập tức về việc quy tắc rủi ro đã bị bỏ qua.
+- FEATURE (Helper Utilities): Thêm các hàm hỗ trợ `validate_order_before_placement` và `get_market_status` để tăng cường
+  khả năng kiểm tra và gỡ lỗi (ý tưởng của người dùng).
 """
-# THÊM DÒNG NÀY ĐỂ KHẮC PHỤC LỖI TYPING
 from __future__ import annotations
 
 import MetaTrader5 as mt5
 import pandas as pd
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 
 # Lấy logger được cấu hình bởi file chính, nếu không có thì tạo logger cơ bản
 logger = logging.getLogger("ExnessBot")
@@ -33,7 +37,7 @@ class ExnessConnector:
             '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
             '1d': mt5.TIMEFRAME_D1,
         }
-        logger.info("Exness Connector v1.1.0 khởi tạo. Sẵn sàng kết nối...")
+        logger.info("Exness Connector v2.0.0 (The Guardian) khởi tạo. Sẵn sàng kết nối...")
 
     def connect(self) -> bool:
         if self._is_connected:
@@ -93,10 +97,16 @@ class ExnessConnector:
 
     def place_order(self, symbol: str, order_type: int, lot_size: float, sl_price: float, tp_price: float, magic_number: int, comment: str) -> Optional[mt5.TradeResult]:
         if not self._is_connected: return None
-        tick = mt5.symbol_info_tick(symbol)
-        if not tick:
-            logger.error(f"Không thể lấy giá tick cho {symbol} để đặt lệnh.")
+        
+        # Kiểm tra lệnh lần cuối trước khi gửi
+        is_valid, reason = self.validate_order_before_placement(symbol, order_type, lot_size, sl_price, tp_price)
+        if not is_valid:
+            logger.error(f"Lệnh không hợp lệ cho {symbol}: {reason}. Hủy đặt lệnh.")
+            market_data = self.get_market_status(symbol)
+            logger.error(f"Dữ liệu thị trường tại thời điểm lỗi: {market_data}")
             return None
+
+        tick = mt5.symbol_info_tick(symbol)
         price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": symbol, "volume": lot_size,
@@ -122,7 +132,8 @@ class ExnessConnector:
         volume = volume_to_close if volume_to_close is not None and volume_to_close > 0 else position.volume
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": position.symbol, "volume": volume,
-            "type": order_type, "position": position.ticket, "price": price, "comment": comment,
+            "type": order_type, "position": position.ticket, "price": price, "comment": "",
+            #"type": order_type, "position": position.ticket, "price": price, "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
         }
         result = mt5.order_send(request)
@@ -153,52 +164,145 @@ class ExnessConnector:
 
     def calculate_lot_size(self, symbol: str, risk_amount_usd: float, sl_price: float, order_type: int) -> Optional[float]:
         """
-        Tính toán lot size chính xác dựa trên số tiền rủi ro, khoảng cách stop loss và loại lệnh.
+        Tính toán lot size chính xác với xử lý lỗi toàn diện và cơ chế dự phòng.
         """
-        if not self._is_connected: return None
+        if not self._is_connected:
+            logger.error(f"MT5 chưa kết nối - không thể tính lot size cho {symbol}")
+            return None
+        
         try:
+            # BƯỚC 1: Lấy thông tin symbol và validate
             symbol_info = mt5.symbol_info(symbol)
             if not symbol_info:
-                logger.error(f"Không thể lấy thông tin symbol {symbol}")
+                logger.error(f"Không lấy được thông tin symbol {symbol}")
                 return None
 
             tick = mt5.symbol_info_tick(symbol)
             if not tick:
-                logger.error(f"Không thể lấy giá tick của {symbol}")
+                logger.error(f"Không lấy được tick data của {symbol}")
                 return None
             
-            # **CẢI TIẾN:** Sử dụng trực tiếp `order_type` để lấy giá vào lệnh chính xác
+            # BƯỚC 2: Xác định giá vào lệnh và các tham số cơ bản
             entry_price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+            min_vol, max_vol, vol_step = symbol_info.volume_min, symbol_info.volume_max, symbol_info.volume_step
 
-            if abs(entry_price - sl_price) < symbol_info.point * 2: # Kiểm tra khoảng cách tối thiểu
-                logger.error(f"Khoảng cách giữa giá vào lệnh và SL quá nhỏ cho {symbol}")
-                return None
+            # BƯỚC 3: Validate và tự động điều chỉnh khoảng cách SL
+            # Yêu cầu SL phải cách giá ít nhất 2 lần spread để đảm bảo lệnh hợp lệ
+            min_distance = symbol_info.spread * symbol_info.point * 2.0
+            if abs(entry_price - sl_price) < min_distance:
+                logger.warning(f"SL quá gần cho {symbol}. Khoảng cách hiện tại: {abs(entry_price - sl_price):.5f} < Yêu cầu: {min_distance:.5f}")
+                # Thêm một khoảng đệm an toàn 20%
+                buffer = min_distance * 1.2
+                sl_price = entry_price - buffer if order_type == mt5.ORDER_TYPE_BUY else entry_price + buffer
+                logger.info(f"Tự động điều chỉnh SL cho {symbol} về mức an toàn: {sl_price:.5f}")
 
-            # Tính toán mức lỗ cho 1.0 lot dựa trên hàm của MT5 (chính xác nhất)
+            # BƯỚC 4: Tính mức lỗ, ưu tiên hàm của MT5
             loss_per_lot = mt5.order_calc_profit(order_type, symbol, 1.0, entry_price, sl_price)
-            if loss_per_lot is None or loss_per_lot <= 0:
-                logger.error(f"Không thể tính toán mức lỗ cho 1 lot của {symbol}. Có thể do SL quá gần.")
-                return None
 
-            # Tính lot size thô
+            # BƯỚC 5: Validate kết quả tính mức lỗ và fallback khẩn cấp
+            if loss_per_lot is None or loss_per_lot >= 0:
+                logger.critical(f"TÍNH TOÁN LỖ THẤT BẠI cho {symbol} ngay cả sau khi điều chỉnh SL. Giá trị loss_per_lot: {loss_per_lot}")
+                logger.critical(f"Bỏ qua quy tắc rủi ro! Sử dụng lot size tối thiểu ({min_vol}) làm giải pháp khẩn cấp.")
+                return min_vol
+
+            # BƯỚC 6: Tính toán và làm tròn lot size
             lot_size = risk_amount_usd / abs(loss_per_lot)
 
-            # Làm tròn và kiểm tra các giới hạn của sàn
-            min_vol, max_vol, vol_step = symbol_info.volume_min, symbol_info.volume_max, symbol_info.volume_step
-            
-            # Làm tròn lot size theo bước khối lượng của sàn
-            lot_size = round(lot_size / vol_step) * vol_step
-            lot_size = round(lot_size, 2) # Làm tròn tới 2 chữ số thập phân cho chắc chắn
+            if vol_step > 0:
+                lot_size = round(lot_size / vol_step) * vol_step
+            lot_size = round(lot_size, 2)
 
+            # BƯỚC 7: Áp dụng giới hạn min/max của sàn
             if lot_size < min_vol:
-                logger.warning(f"Lot size tính toán ({lot_size}) < mức tối thiểu ({min_vol}). Sử dụng mức tối thiểu.")
+                logger.warning(f"Lot size tính toán ({lot_size:.2f}) < mức tối thiểu ({min_vol}). Sử dụng mức tối thiểu.")
                 return min_vol
             if lot_size > max_vol:
-                logger.warning(f"Lot size tính toán ({lot_size}) > mức tối đa ({max_vol}). Sử dụng mức tối đa.")
+                logger.warning(f"Lot size tính toán ({lot_size:.2f}) > mức tối đa ({max_vol}). Sử dụng mức tối đa.")
                 return max_vol
             
-            logger.debug(f"Tính toán lot size cho {symbol}: {lot_size:.2f} (Rủi ro: ${risk_amount_usd:.2f})")
+            logger.debug(f"Tính toán lot size thành công cho {symbol}: {lot_size:.2f} (Rủi ro: ${risk_amount_usd:.2f})")
             return lot_size
+
         except Exception as e:
-            logger.error(f"Lỗi ngoại lệ khi tính lot size cho {symbol}: {e}", exc_info=True)
+            logger.error(f"Lỗi ngoại lệ nghiêm trọng trong calculate_lot_size cho {symbol}: {e}", exc_info=True)
+            try:
+                symbol_info = mt5.symbol_info(symbol)
+                if symbol_info:
+                    logger.critical(f"FALLBACK NGOẠI LỆ: Sử dụng lot size tối thiểu cho {symbol} do lỗi không xác định.")
+                    return symbol_info.volume_min
+            except:
+                pass
             return None
+
+    def validate_order_before_placement(self, symbol: str, order_type: int, lot_size: float, 
+                                          sl_price: float, tp_price: float) -> Tuple[bool, str]:
+        """
+        Kiểm tra các tham số của lệnh một cách toàn diện trước khi gửi lên server MT5.
+        """
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                return False, f"Symbol không hợp lệ: {symbol}"
+                
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                return False, f"Không có tick data cho {symbol}"
+                
+            # Kiểm tra lot size
+            if lot_size < symbol_info.volume_min:
+                return False, f"Lot size {lot_size} < tối thiểu {symbol_info.volume_min}"
+            if lot_size > symbol_info.volume_max:
+                return False, f"Lot size {lot_size} > tối đa {symbol_info.volume_max}"
+            if symbol_info.volume_step > 0 and round(lot_size / symbol_info.volume_step) * symbol_info.volume_step != lot_size:
+                 return False, f"Lot size {lot_size} không đúng bước nhảy {symbol_info.volume_step}"
+
+            # Kiểm tra giá và khoảng cách SL/TP
+            entry_price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+            # stops_level là khoảng cách tối thiểu tính bằng point mà sàn yêu cầu
+            min_distance_points = getattr(symbol_info, 'trade_stops_level', 0)
+            min_distance_price = min_distance_points * symbol_info.point
+
+            if sl_price > 0:
+                if order_type == mt5.ORDER_TYPE_BUY and entry_price - sl_price < min_distance_price:
+                    return False, f"SL quá gần. Khoảng cách {entry_price - sl_price:.5f} < yêu cầu {min_distance_price:.5f}"
+                if order_type == mt5.ORDER_TYPE_SELL and sl_price - entry_price < min_distance_price:
+                    return False, f"SL quá gần. Khoảng cách {sl_price - entry_price:.5f} < yêu cầu {min_distance_price:.5f}"
+
+            if tp_price > 0:
+                if order_type == mt5.ORDER_TYPE_BUY and tp_price - entry_price < min_distance_price:
+                    return False, f"TP quá gần. Khoảng cách {tp_price - entry_price:.5f} < yêu cầu {min_distance_price:.5f}"
+                if order_type == mt5.ORDER_TYPE_SELL and entry_price - tp_price < min_distance_price:
+                    return False, f"TP quá gần. Khoảng cách {entry_price - tp_price:.5f} < yêu cầu {min_distance_price:.5f}"
+            
+            return True, "Hợp lệ"
+            
+        except Exception as e:
+            return False, f"Lỗi ngoại lệ khi validation: {e}"
+
+    def get_market_status(self, symbol: str) -> dict:
+        """
+        Lấy thông tin chi tiết về thị trường của một symbol để gỡ lỗi.
+        """
+        try:
+            symbol_info = mt5.symbol_info(symbol)
+            tick = mt5.symbol_info_tick(symbol)
+            
+            if not symbol_info or not tick:
+                return {"status": "error", "message": "Không lấy được dữ liệu thị trường"}
+                
+            return {
+                "status": "ok",
+                "symbol": symbol,
+                "bid": tick.bid,
+                "ask": tick.ask,
+                "spread_points": symbol_info.spread,
+                "spread_price": symbol_info.spread * symbol_info.point,
+                "stops_level_points": getattr(symbol_info, 'trade_stops_level', 'N/A'),
+                "min_lot": symbol_info.volume_min,
+                "max_lot": symbol_info.volume_max,
+                "lot_step": symbol_info.volume_step,
+                "point": symbol_info.point,
+                "contract_size": getattr(symbol_info, 'trade_contract_size', 'N/A'),
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}

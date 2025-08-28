@@ -228,7 +228,7 @@ RULE_FUNCS: List[Callable[[Dict], Tuple[float, str]]] = [
 # Hệ số này điều chỉnh độ "dốc" của hàm tanh.
 # Giá trị nhỏ hơn -> đường cong thoải hơn, điểm số khó đạt tới +/- 10.
 # Giá trị lớn hơn -> đường cong dốc hơn, điểm số dễ đạt tới +/- 10 hơn.
-TANH_SENSITIVITY = 0.15
+TANH_SENSITIVITY = 0.25
 
 CONFLUENCE_BONUS = {
     "ENABLED": True,
