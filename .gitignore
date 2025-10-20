@@ -1,5 +1,4 @@
 exnessvenv/*
 .env
-logs/*
+data/*
 /__pycache__/*
-livetrade/data/*
