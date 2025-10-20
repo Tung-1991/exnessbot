@@ -8,6 +8,9 @@ SYMBOL = 'ETHUSD'               # Cặp tiền tệ để giao dịch
 TIMEFRAME = '15m'               # Khung thời gian chính ('1m', '5m', '15m'...)
 MAGIC_NUMBER = 20251020         # ID riêng để bot quản lý lệnh
 
+ENABLE_LONG_TRADES = True       # (True/False) Cho phép bot vào lệnh LONG
+ENABLE_SHORT_TRADES = True      # (True/False) Cho phép bot vào lệnh SHORT
+
 # ==============================================================================
 # II. QUẢN LÝ RỦI RO & LỆNH
 # ==============================================================================
@@ -16,6 +19,12 @@ RISK_PERCENT = 1.0              # % rủi ro MONG MUỐN cho mỗi lệnh
 ENABLE_FORCE_MIN_LOT = True     # True: Bật cơ chế "cố đấm ăn xôi" cho vốn bé
 FORCED_MIN_LOT_SIZE = 0.1       # Lot size tối thiểu để "cố" (0.1 cho ETH)
 MAX_FORCED_RISK_PERCENT = 5.0   # Ngưỡng rủi ro % tối đa chấp nhận khi "cố"
+
+# --- Giới hạn Stop Loss (LOGIC % MỚI - THÔNG MINH HƠN) ---
+SL_FILTER_USE_PERCENT = True    # Bật/Tắt logic lọc theo %
+MAX_SL_PERCENT_OF_PRICE = 5.0   # Tối đa 5% giá vào lệnh (Ví dụ: Mua ETH 4000, SL ko đc xa quá 5%*4000 = $200)
+MIN_SL_PERCENT_OF_PRICE = 0.5   # Tối thiểu 0.5% giá vào lệnh (Ví dụ: Mua ETH 4000, SL phải xa hơn 0.5%*4000 = $20)
+FORCE_MINIMUM_DISTANCE = True   # (Vẫn giữ) Nếu SL < MIN (0.5%), thì ép dùng 0.5%
 
 # --- Quản lý lệnh chung ---
 MAX_ACTIVE_TRADES = 1           # Số lệnh tối đa được phép mở cùng lúc

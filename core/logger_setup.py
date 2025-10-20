@@ -3,14 +3,15 @@
 
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+# Đổi từ RotatingFileHandler sang TimedRotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler 
 
 def setup_logging():
     """
     Thiết lập hệ thống ghi log chuyên nghiệp cho toàn bộ bot.
     - Hiển thị log INFO trở lên ra màn hình.
-    - Ghi log DEBUG trở lên vào file info.log (tự động xoay vòng).
-    - Ghi log ERROR trở lên vào file error.log.
+    - Ghi log DEBUG trở lên vào file (TỰ ĐỘNG XOAY VÒNG HÀNG NGÀY).
+    - Ghi log ERROR trở lên vào file (TỰ ĐỘNG XOAY VÒNG HÀNG NGÀY).
     """
     
     # Xác định thư mục log
@@ -33,17 +34,38 @@ def setup_logging():
     stream_formatter = logging.Formatter('%(message)s') # Format đơn giản cho màn hình
     stream_handler.setFormatter(stream_formatter)
     
-    # --- Handler 2: Ghi vào file info.log ---
+    # --- Handler 2: Ghi vào file info.log (Xoay vòng hàng ngày) ---
     info_log_path = os.path.join(LOG_DIR, "info.log")
-    # Tự động xoay vòng khi file log đạt 5MB, giữ lại 3 file backup
-    info_handler = RotatingFileHandler(info_log_path, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+    
+    # SỬ DỤNG HANDLER MỚI:
+    # when='D' (daily): Xoay vòng mỗi ngày
+    # interval=1: Mỗi 1 ngày
+    # backupCount=30: Giữ lại 30 file log cũ (30 ngày)
+    info_handler = TimedRotatingFileHandler(
+        info_log_path, 
+        when='D', 
+        interval=1, 
+        backupCount=30, 
+        encoding='utf-8'
+    )
     info_handler.setLevel(logging.DEBUG) # Ghi lại tất cả mọi thứ vào file
-    file_formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    file_formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)s] - %(message)s', 
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     info_handler.setFormatter(file_formatter)
     
-    # --- Handler 3: Ghi vào file error.log ---
+    # --- Handler 3: Ghi vào file error.log (Xoay vòng hàng ngày) ---
     error_log_path = os.path.join(LOG_DIR, "error.log")
-    error_handler = logging.FileHandler(error_log_path, encoding='utf-8')
+    
+    # Áp dụng logic tương tự cho file error
+    error_handler = TimedRotatingFileHandler(
+        error_log_path, 
+        when='D', 
+        interval=1, 
+        backupCount=30, 
+        encoding='utf-8'
+    )
     error_handler.setLevel(logging.ERROR) # Chỉ ghi ERROR và CRITICAL
     error_handler.setFormatter(file_formatter)
     
@@ -55,4 +77,4 @@ def setup_logging():
     # Ngăn không cho log lan truyền lên root logger
     logger.propagate = False
     
-    print("Hệ thống logging đã được thiết lập.")
+    print("Hệ thống logging (xoay vòng hàng ngày) đã được thiết lập.")

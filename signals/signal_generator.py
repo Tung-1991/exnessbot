@@ -38,7 +38,7 @@ def get_final_signal(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[int, Dic
         df, 
         period=bb_config['PERIOD'], 
         std_dev=bb_config['STD_DEV']
-    ) # <== ĐÃ SỬA
+    ) 
     score_details['bb_score'] = bb_raw_signal * weights['BB_TRIGGER_SCORE']
     
     # Các hàm khác đã trả về điểm số đã nhân trọng số
@@ -72,9 +72,14 @@ def get_final_signal(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[int, Dic
     final_signal = 0
     entry_threshold = config['ENTRY_SCORE_THRESHOLD']
     
-    if final_score >= entry_threshold:
+    # Lấy giá trị config, mặc định là True nếu không tìm thấy
+    allow_long = config.get('ENABLE_LONG_TRADES', True)
+    allow_short = config.get('ENABLE_SHORT_TRADES', True)
+    
+    # <-- LOGIC ĐÃ SỬA ĐỂ KIỂM TRA CÔNG TẮC -->
+    if final_score >= entry_threshold and allow_long:
         final_signal = 1  # QUYẾT ĐỊNH MUA
-    elif final_score <= -entry_threshold:
+    elif final_score <= -entry_threshold and allow_short:
         final_signal = -1 # QUYẾT ĐỊNH BÁN
         
     return final_signal, score_details
