@@ -1,120 +1,125 @@
 # -*- coding: utf-8 -*-
-# signals/signal_generator.py (v4.1 - Đã sửa lỗi)
+# signals/signal_generator.py (v5.0 - Bộ Luật V2.3)
 
 import pandas as pd
 from typing import Dict, Any, Tuple
 
-# Import các hàm tính điểm mới từ các file con
+# --- BƯỚC 1: IMPORT TẤT CẢ CÁC HÀM TÍNH ĐIỂM ---
+
+# Import các hàm tính "Điểm Khởi Tạo"
 from signals.bollinger_bands import get_bb_score
 from signals.rsi import get_rsi_score
 from signals.macd import get_macd_score
-from signals.supertrend import get_supertrend_score
 
-# Import các hàm tính toán gốc cho các bộ lọc
-from signals.ema import calculate_emas
-
-# ==============================================================================
-# HÀM ÁP DỤNG CÁC BỘ LỌC (Hệ số nhân)
-# ==============================================================================
-
-def apply_filters(long_score: float, short_score: float, df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
-    """Áp dụng các bộ lọc EMA và Volume để điều chỉnh điểm số cuối cùng."""
-    
-    # --- Bộ lọc EMA ---
-    ema_cfg = config['FILTER_CONFIG']['EMA_TREND_FILTER']
-    if ema_cfg['enabled']:
-        # Lấy tham số EMA từ config chung thay vì hardcode
-        ema_params = config['INDICATORS_CONFIG']['EMA']
-        slow_ema, _ = calculate_emas(df, {'INDICATORS_CONFIG': {'EMA': ema_params}})
-        if slow_ema is not None and not slow_ema.empty:
-            last_close = df['close'].iloc[-1]
-            last_ema = slow_ema.iloc[-1]
-            
-            if last_close > last_ema: # Xu hướng tăng
-                long_score *= ema_cfg['multipliers']['in_trend_multiplier']
-                short_score *= ema_cfg['multipliers']['counter_trend_multiplier']
-            else: # Xu hướng giảm
-                long_score *= ema_cfg['multipliers']['counter_trend_multiplier']
-                short_score *= ema_cfg['multipliers']['in_trend_multiplier']
-
-    # --- Bộ lọc Volume ---
-    vol_cfg = config['FILTER_CONFIG']['VOLUME_FILTER']
-    if vol_cfg['enabled']:
-        volume_ma = df['volume'].rolling(window=vol_cfg['params']['ma_period']).mean()
-        if not volume_ma.empty and volume_ma.iloc[-1] > 0:
-            last_volume = df['volume'].iloc[-1]
-            avg_volume = volume_ma.iloc[-1]
-            ratio = last_volume / avg_volume
-
-            multiplier = 1.0
-            for tier in sorted(vol_cfg['tiered_multipliers'], key=lambda x: x['threshold_ratio']):
-                if ratio < tier['threshold_ratio']:
-                    multiplier = tier['multiplier']
-                    break
-            
-            long_score *= multiplier
-            short_score *= multiplier
-
-    return long_score, short_score
+# Import các hàm tính "Điểm Điều Chỉnh"
+from signals.ema import get_ema_adjustment_score
+from signals.supertrend import get_supertrend_adjustment_score
+from signals.volume import get_volume_adjustment_score
 
 # ==============================================================================
-# HÀM TỔNG HỢP TÍN HIỆU CUỐI CÙNG (Hàm chính)
+# HÀM TỔNG HỢP TÍN HIỆU CUỐI CÙNG (HÀM CHÍNH)
 # ==============================================================================
 
-def get_final_signal(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[int, Dict[str, float]]:
+def get_final_signal(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
     """
-    Tổng hợp điểm từ tất cả các chỉ báo, áp dụng bộ lọc, và ra quyết định.
+    Tổng hợp điểm từ tất cả các chỉ báo theo "Bộ Luật V2.3",
+    áp dụng thưởng/phạt, và ra quyết định giao dịch cuối cùng.
     """
-    total_long_score = 0.0
-    total_short_score = 0.0
-    score_details = {}
-
-    # --- BƯỚC 1: TÍNH ĐIỂM THÔ TỪ CÁC CHỈ BÁO TÍN HIỆU ---
+    # --- KHỞI TẠO CÁC BIẾN ---
+    raw_long_score, raw_short_score = 0.0, 0.0
+    adj_long_score, adj_short_score = 0.0, 0.0
     
-    # 1. Bollinger Bands
-    long_bb, short_bb = get_bb_score(df, config)
-    total_long_score += long_bb
-    total_short_score += short_bb
-    score_details['bb_score'] = f"L:{long_bb:.2f}/S:{short_bb:.2f}"
+    # Dictionary để lưu điểm chi tiết cho việc log và backtest
+    score_details = {
+        "raw": {"long": {}, "short": {}},
+        "adj": {"long": {}, "short": {}},
+        "final": {}
+    }
 
-    # 2. Supertrend
-    long_st, short_st = get_supertrend_score(df, config)
-    total_long_score += long_st
-    total_short_score += short_st
-    score_details['st_score'] = f"L:{long_st:.2f}/S:{short_st:.2f}"
-
-    # 3. RSI (ĐÃ THÊM)
-    long_rsi, short_rsi = get_rsi_score(df, config)
-    total_long_score += long_rsi
-    total_short_score += short_rsi
-    score_details['rsi_score'] = f"L:{long_rsi:.2f}/S:{short_rsi:.2f}"
-
-    # 4. MACD (ĐÃ THÊM)
-    long_macd, short_macd = get_macd_score(df, config)
-    total_long_score += long_macd
-    total_short_score += short_macd
-    score_details['macd_score'] = f"L:{long_macd:.2f}/S:{short_macd:.2f}"
-
-    score_details['raw_long_score'] = total_long_score
-    score_details['raw_short_score'] = total_short_score
-
-    # --- BƯỚC 2: ÁP DỤNG CÁC BỘ LỌC XÁC NHẬN ---
-    final_long_score, final_short_score = apply_filters(total_long_score, total_short_score, df, config)
+    # --- BƯỚC 2: TÍNH ĐIỂM KHỞI TẠO (RAW SCORE) ---
     
-    score_details['final_long_score'] = final_long_score
-    score_details['final_short_score'] = final_short_score
+    # 2.1 Bollinger Bands
+    bb_long, bb_short = get_bb_score(df, config)
+    raw_long_score += bb_long
+    raw_short_score += bb_short
+    score_details["raw"]["long"]["BB"] = bb_long
+    score_details["raw"]["short"]["BB"] = bb_short
 
-    # --- BƯỚC 3: RA QUYẾT ĐỊNH CUỐI CÙNG ---
+    # 2.2 RSI
+    rsi_long, rsi_short = get_rsi_score(df, config)
+    raw_long_score += rsi_long
+    raw_short_score += rsi_short
+    score_details["raw"]["long"]["RSI"] = rsi_long
+    score_details["raw"]["short"]["RSI"] = rsi_short
+
+    # 2.3 MACD
+    macd_long, macd_short = get_macd_score(df, config)
+    raw_long_score += macd_long
+    raw_short_score += macd_short
+    score_details["raw"]["long"]["MACD"] = macd_long
+    score_details["raw"]["short"]["MACD"] = macd_short
+
+    score_details["raw"]["long_total"] = raw_long_score
+    score_details["raw"]["short_total"] = raw_short_score
+
+    # --- BƯỚC 3: TÍNH ĐIỂM ĐIỀU CHỈNH (ADJUSTMENT SCORE) ---
+
+    # 3.1 EMA Trend Filter
+    ema_score = get_ema_adjustment_score(df, config)
+    # Nếu ema_score > 0 (thuận xu hướng tăng) -> thưởng LONG, phạt SHORT
+    # Nếu ema_score < 0 (thuận xu hướng giảm) -> phạt LONG, thưởng SHORT
+    adj_long_score += ema_score
+    adj_short_score -= ema_score # Logic đảo ngược
+    score_details["adj"]["long"]["EMA"] = ema_score
+    score_details["adj"]["short"]["EMA"] = -ema_score
+
+    # 3.2 Supertrend Filter
+    st_score = get_supertrend_adjustment_score(df, config)
+    # Logic tương tự EMA
+    adj_long_score += st_score
+    adj_short_score -= st_score
+    score_details["adj"]["long"]["Supertrend"] = st_score
+    score_details["adj"]["short"]["Supertrend"] = -st_score
+
+    # 3.3 Volume Filter
+    vol_score = get_volume_adjustment_score(df, config)
+    # Volume xác nhận cho cả hai phe
+    # Nếu vol_score > 0 (volume mạnh) -> thưởng cho cả hai
+    # Nếu vol_score < 0 (volume yếu) -> phạt cả hai
+    adj_long_score += vol_score
+    adj_short_score += vol_score
+    score_details["adj"]["long"]["Volume"] = vol_score
+    score_details["adj"]["short"]["Volume"] = vol_score
+    
+    score_details["adj"]["long_total"] = adj_long_score
+    score_details["adj"]["short_total"] = adj_short_score
+
+    # --- BƯỚC 4: TÍNH ĐIỂM CUỐI CÙNG VÀ RA QUYẾT ĐỊNH ---
+    final_long_score = raw_long_score + adj_long_score
+    final_short_score = raw_short_score + adj_short_score
+    
+    score_details["final"]["long"] = final_long_score
+    score_details["final"]["short"] = final_short_score
+
     final_signal = 0
-    entry_threshold = config['ENTRY_SCORE_THRESHOLD']
-    allow_long = config.get('ENABLE_LONG_TRADES', True)
-    allow_short = config.get('ENABLE_SHORT_TRADES', True)
+    final_score = 0
     
+    try:
+        entry_threshold = config['ENTRY_SCORE_THRESHOLD']
+        allow_long = config.get('ENABLE_LONG_TRADES', True)
+        allow_short = config.get('ENABLE_SHORT_TRADES', True)
+    except KeyError:
+        return 0, {}
+
+    # So sánh và quyết định
     if allow_long and final_long_score > final_short_score and final_long_score >= entry_threshold:
-        final_signal = 1
-        score_details['final_decision'] = f"LONG with score {final_long_score:.2f}"
+        final_signal = 1 # Tín hiệu MUA
+        final_score = final_long_score
     elif allow_short and final_short_score > final_long_score and final_short_score >= entry_threshold:
-        final_signal = -1
-        score_details['final_decision'] = f"SHORT with score {final_short_score:.2f}"
+        final_signal = -1 # Tín hiệu BÁN
+        final_score = final_short_score
         
+    score_details["final"]["decision_score"] = final_score
+    score_details["final"]["signal"] = final_signal
+
     return final_signal, score_details

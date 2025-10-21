@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
-# signals/macd.py (v4.0 - Phase 4)
+# signals/macd.py (v5.0 - Logic Range Score 5 Cấp Độ)
 
 import pandas as pd
+import numpy as np
 from typing import Optional, Dict, Any, Tuple
 
-def calculate_macd(df: pd.DataFrame, fast_ema: int = 12, slow_ema: int = 26, signal_sma: int = 9) -> Optional[Tuple[pd.Series, pd.Series]]:
+def calculate_macd(df: pd.DataFrame, fast_ema: int = 12, slow_ema: int = 26, signal_sma: int = 9) -> Optional[Tuple[pd.Series, pd.Series, pd.Series]]:
     """
-    Tính toán đường MACD và đường Signal.
-    Hàm này không thay đổi.
+    Tính toán đường MACD, đường Signal, và Histogram.
+    Hàm này được nâng cấp để trả về cả Histogram để phân tích.
     """
     if 'close' not in df.columns:
         return None
@@ -16,16 +17,20 @@ def calculate_macd(df: pd.DataFrame, fast_ema: int = 12, slow_ema: int = 26, sig
     ema_slow = df['close'].ewm(span=slow_ema, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal_sma, adjust=False).mean()
+    histogram = macd_line - signal_line
     
-    return macd_line, signal_line
+    return macd_line, signal_line, histogram
 
 def get_macd_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
-    Tính điểm thô cho LONG và SHORT dựa trên tín hiệu giao cắt của MACD.
-    Hàm này đã được viết lại hoàn toàn.
+    Tính điểm thô cho LONG và SHORT dựa trên 5 cấp độ chất lượng của tín hiệu MACD.
     """
-    cfg = config['SCORING_CONFIG']['MACD']
-    if not cfg['enabled']:
+    try:
+        cfg = config['RAW_SCORE_CONFIG']['MACD']
+    except KeyError:
+        return 0.0, 0.0
+
+    if not cfg.get('enabled', False) or len(df) < 3: # Cần ít nhất 3 nến để so sánh
         return 0.0, 0.0
 
     lines = calculate_macd(
@@ -35,33 +40,59 @@ def get_macd_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, flo
         signal_sma=cfg['params']['signal_sma']
     )
     
-    if lines is None or len(df) < 2:
+    if lines is None:
         return 0.0, 0.0
 
-    macd_line, signal_line = lines
+    macd_line, signal_line, histogram = lines
     long_score, short_score = 0.0, 0.0
     
-    # Lấy dữ liệu của 2 cây nến gần nhất để xác định sự giao cắt
-    prev_macd = macd_line.iloc[-2]
-    prev_signal = signal_line.iloc[-2]
-    last_macd = macd_line.iloc[-1]
-    last_signal = signal_line.iloc[-1]
+    # Lấy dữ liệu của 3 cây nến gần nhất để phân tích
+    prev_macd, last_macd = macd_line.iloc[-2], macd_line.iloc[-1]
+    prev_signal, last_signal = signal_line.iloc[-2], signal_line.iloc[-1]
+    prev_hist, last_hist = histogram.iloc[-2], histogram.iloc[-1]
     
-    # --- Logic tính điểm ---
-    score_on_crossover = cfg['score_levels'].get('crossover', 0)
+    score_map = {level['level']: level['score'] for level in cfg.get('score_levels', [])}
 
-    # Tín hiệu MUA (Bullish Crossover): MACD cắt lên trên đường Signal
-    if prev_macd < prev_signal and last_macd > last_signal:
-        long_score = score_on_crossover
-        
-    # Tín hiệu BÁN (Bearish Crossover): MACD cắt xuống dưới đường Signal
-    elif prev_macd > prev_signal and last_macd < last_signal:
-        short_score = score_on_crossover
-        
-    # Chuẩn hóa điểm theo trọng số
-    # Giả định điểm tối đa có thể có là giá trị 'crossover'
-    max_possible_score = score_on_crossover
+    # --- LOGIC CHẤM ĐIỂM CHO PHE MUA (LONG) ---
+    is_bullish_crossover = prev_hist < 0 and last_hist > 0
     
+    if is_bullish_crossover:
+        # Cấp 1: Cú cắt bùng nổ
+        if 'explosive_crossover' in score_map and last_hist > abs(prev_hist) * 1.5:
+            long_score = score_map['explosive_crossover']
+        # Cấp 2: Cú cắt mạnh
+        elif 'strong_crossover' in score_map and (last_macd > prev_macd) and (last_signal > prev_signal):
+            long_score = score_map['strong_crossover']
+        # Cấp 3: Cú cắt tiêu chuẩn
+        elif 'standard_crossover' in score_map:
+            long_score = score_map['standard_crossover']
+    # Cấp 5: Sắp giao cắt
+    elif 'about_to_cross' in score_map and prev_hist < 0 and last_hist < 0 and last_hist > prev_hist:
+         long_score = score_map['about_to_cross']
+
+
+    # --- LOGIC CHẤM ĐIỂM CHO PHE BÁN (SHORT) ---
+    is_bearish_crossover = prev_hist > 0 and last_hist < 0
+
+    if is_bearish_crossover:
+        # Cấp 1: Cú cắt bùng nổ
+        if 'explosive_crossover' in score_map and abs(last_hist) > prev_hist * 1.5:
+            short_score = score_map['explosive_crossover']
+        # Cấp 2: Cú cắt mạnh
+        elif 'strong_crossover' in score_map and (last_macd < prev_macd) and (last_signal < prev_signal):
+            short_score = score_map['strong_crossover']
+        # Cấp 3: Cú cắt tiêu chuẩn
+        elif 'standard_crossover' in score_map:
+            short_score = score_map['standard_crossover']
+    # Cấp 5: Sắp giao cắt
+    elif 'about_to_cross' in score_map and prev_hist > 0 and last_hist > 0 and last_hist < prev_hist:
+         short_score = score_map['about_to_cross']
+
+    # (Logic cho 'noisy_crossover' có thể phức tạp hơn, tạm thời dùng các logic trên)
+
+    # Chuẩn hóa điểm theo trọng số (weight)
+    max_possible_score = max(level['score'] for level in cfg.get('score_levels', [])) if cfg.get('score_levels') else 1
+
     final_long_score = (long_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
     final_short_score = (short_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
 

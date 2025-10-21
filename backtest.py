@@ -1,36 +1,89 @@
 # -*- coding: utf-8 -*-
-# backtest.py (v5.1 - Tùy chọn Log chi tiết)
+# backtest.py (v6.0 - Phòng Thí Nghiệm "Bộ Luật V2.3")
 
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List
-import config  # Import "bộ não" config mới của chúng ta
+import config
 
-# Import các hàm tính toán chỉ báo và logic tín hiệu mới
+# Import các hàm tính toán và logic tín hiệu mới nhất
 from signals.signal_generator import get_final_signal
-# Import hàm quản lý rủi ro GỐC (đã sửa logic %)
 from core.risk_manager import calculate_trade_details
 
 # --- CẤU HÌNH BACKTEST ---
 INITIAL_CAPITAL = 1000.0
-DATA_FILE_PATH = "data/ETHUSD_15m_6M.csv" # File dữ liệu 6 tháng
-CONTRACT_SIZE = 1.0 # 1 Lot = 1 ETH
-CANDLE_FETCH_COUNT = config.CANDLE_FETCH_COUNT # = 300
+DATA_FILE_PATH = "data/ETHUSD_15m_6M.csv" # Đường dẫn tới file dữ liệu
+CONTRACT_SIZE = 1.0 # Kích thước hợp đồng (ví dụ: 1.0 cho 1 ETH)
+CANDLE_FETCH_COUNT = config.CANDLE_FETCH_COUNT # Số nến lịch sử cần để tính chỉ báo
 
 # --- CẤU HÌNH HIỂN THỊ LOG ---
-# Đặt thành True để xem phân tích chi tiết của từng tín hiệu trong quá trình chạy.
+# Đặt thành True để xem bảng phân tích chi tiết của từng tín hiệu.
 # Đặt thành False để chỉ xem báo cáo tổng kết cuối cùng (chạy nhanh hơn).
-SHOW_DETAILED_LOG = False
+SHOW_DETAILED_LOG = True
 
 # Lấy config dictionary (quan trọng)
 config_dict = config.__dict__
 
+def print_score_details(timestamp: Any, details: Dict[str, Any]):
+    """
+    In ra bảng phân tích điểm số chi tiết và dễ hiểu.
+    """
+    raw_long = details.get("raw", {}).get("long", {})
+    raw_short = details.get("raw", {}).get("short", {})
+    adj_long = details.get("adj", {}).get("long", {})
+    adj_short = details.get("adj", {}).get("short", {})
+    
+    raw_long_total = details.get("raw", {}).get("long_total", 0.0)
+    raw_short_total = details.get("raw", {}).get("short_total", 0.0)
+    adj_long_total = details.get("adj", {}).get("long_total", 0.0)
+    adj_short_total = details.get("adj", {}).get("short_total", 0.0)
+    
+    final_long = details.get("final", {}).get("long", 0.0)
+    final_short = details.get("final", {}).get("short", 0.0)
+    
+    signal = details.get("final", {}).get("signal", 0)
+
+    # --- Bắt đầu in ---
+    print(f"[{timestamp}] --- PHÂN TÍCH TÍN HIỆU ---")
+    
+    # --- PHE LONG ---
+    print("==> PHE LONG")
+    raw_str_long = " | ".join([f"{k}: {v:.1f}" for k, v in raw_long.items()])
+    adj_str_long = " | ".join([f"{k}: {v:+.1f}" for k, v in adj_long.items()])
+    print(f"    [Khởi Tạo] {raw_str_long} => Tổng: {raw_long_total:.1f}")
+    print(f"    [Xác Nhận] {adj_str_long} => Tổng: {adj_long_total:+.1f}")
+    print("    " + "-"*50)
+    print(f"    >> ĐIỂM LONG CUỐI CÙNG: {final_long:.1f}")
+    print()
+
+    # --- PHE SHORT ---
+    print("==> PHE SHORT")
+    raw_str_short = " | ".join([f"{k}: {v:.1f}" for k, v in raw_short.items()])
+    adj_str_short = " | ".join([f"{k}: {v:+.1f}" for k, v in adj_short.items()])
+    print(f"    [Khởi Tạo] {raw_str_short} => Tổng: {raw_short_total:.1f}")
+    print(f"    [Xác Nhận] {adj_str_short} => Tổng: {adj_short_total:+.1f}")
+    print("    " + "-"*50)
+    print(f"    >> ĐIỂM SHORT CUỐI CÙNG: {final_short:.1f}")
+    print()
+
+    # --- QUYẾT ĐỊNH ---
+    decision = "BỎ QUA"
+    if signal == 1:
+        decision = "QUYẾT ĐỊNH: VÀO LỆNH LONG"
+    elif signal == -1:
+        decision = "QUYẾT ĐỊNH: VÀO LỆNH SHORT"
+        
+    threshold = config_dict.get('ENTRY_SCORE_THRESHOLD', 70.0)
+    print(f"{decision} (Điểm cao nhất: {max(final_long, final_short):.1f}, Ngưỡng: {threshold})")
+    print("="*60)
+
+
 def run_backtest():
-    print("--- Bắt đầu chạy Backtest (v5.1 - Tùy chọn Log) ---")
+    print("--- Bắt đầu chạy Backtest (v6.0 - Phòng Thí Nghiệm) ---")
     if SHOW_DETAILED_LOG:
         print("Chế độ log chi tiết: BẬT")
     else:
-        print("Chế độ log chi tiết: TẮT (Chỉ hiển thị kết quả cuối cùng)")
+        print("Chế độ log chi tiết: TẮT")
         
     # 1. Tải và chuẩn bị dữ liệu
     try:
@@ -53,47 +106,37 @@ def run_backtest():
     # 3. Vòng lặp Giả lập
     for i in range(CANDLE_FETCH_COUNT, len(df)):
         
-        # Slice dữ liệu lịch sử cho các hàm tính toán
         historical_df_slice = df.iloc[i - CANDLE_FETCH_COUNT : i]
         current_candle = df.iloc[i]
         
-        # --- A. QUẢN LÝ LỆNH MỞ (Mô phỏng TSL, TP1, PP) ---
+        # --- A. QUẢN LÝ LỆNH MỞ (TP1, PP, TSL...) ---
         trade_management_config = config_dict.get('ACTIVE_TRADE_MANAGEMENT', {})
-        
-        # Tạo bản copy để tránh lỗi khi xóa phần tử trong lúc lặp
         for trade in active_trades[:]:
             pnl = 0.0
             is_long = trade['type'] == 'LONG'
             
-            # Tính PnL hiện tại dựa trên giá 'open' của nến hiện tại
             current_price = current_candle['open']
             price_change = (current_price - trade['entry_price']) if is_long else (trade['entry_price'] - current_price)
             pnl_usd = price_change * trade['lot_size'] * CONTRACT_SIZE
             pnl_r = pnl_usd / trade['initial_risk_usd'] if trade['initial_risk_usd'] > 0 else 0.0
             
-            # Cập nhật PnL đỉnh
             trade['peak_pnl_r'] = max(trade.get('peak_pnl_r', 0.0), pnl_r)
 
-            # --- LOGIC TP1 ---
             if trade_management_config.get("ENABLE_TP1") and not trade.get("tp1_hit") and pnl_r >= trade_management_config.get("TP1_RR_RATIO", 1.0):
-                if SHOW_DETAILED_LOG: print(f"[{current_candle.name}] --- TP1 HIT for trade entered at {trade['entry_time']} ---")
                 trade['tp1_hit'] = True
                 if trade_management_config.get("TP1_MOVE_SL_TO_ENTRY", True):
                     trade['sl_price'] = trade['entry_price']
 
-            # --- LOGIC PROTECT PROFIT (PP) ---
             if (trade_management_config.get("ENABLE_PROTECT_PROFIT") and
                 not trade.get("pp_triggered") and not trade.get("tp1_hit") and
                 trade['peak_pnl_r'] >= trade_management_config.get("PP_MIN_PEAK_R_TRIGGER", 1.2) and
                 (trade['peak_pnl_r'] - pnl_r) >= trade_management_config.get("PP_DROP_R_TRIGGER", 0.4)):
-                if SHOW_DETAILED_LOG: print(f"[{current_candle.name}] --- PROTECT PROFIT TRIGGERED for trade entered at {trade['entry_time']} ---")
                 trade['pp_triggered'] = True
                 if trade_management_config.get("PP_MOVE_SL_TO_ENTRY", True):
                     trade['sl_price'] = trade['entry_price']
             
-            # --- LOGIC TRAILING STOP LOSS (TSL) ---
             if trade_management_config.get("ENABLE_TSL"):
-                atr_series = historical_df_slice['high'] - historical_df_slice['low'] # Vereinfachtes ATR
+                atr_series = historical_df_slice['high'] - historical_df_slice['low']
                 current_atr = atr_series.mean() 
                 trail_distance = current_atr * trade_management_config.get('TSL_ATR_MULTIPLIER', 2.5)
                 
@@ -106,7 +149,6 @@ def run_backtest():
                     if new_potential_sl < trade['sl_price']:
                         trade['sl_price'] = new_potential_sl
             
-            # --- KIỂM TRA ĐÓNG LỆNH (SL/TP) ---
             trade_closed = False
             close_price = 0.0
 
@@ -139,36 +181,9 @@ def run_backtest():
         if can_open_trade:
             signal, score_details = get_final_signal(historical_df_slice, config_dict)
             
-            # --- DEBUGGING BLOCK (v2 - Chi tiết hơn, có thể bật/tắt) ---
-            if SHOW_DETAILED_LOG:
-                final_long = score_details.get('final_long_score', 0)
-                final_short = score_details.get('final_short_score', 0)
-
-                # Chỉ in ra khi có một trong hai phe có điểm thô > 30 để tránh làm loãng log
-                if score_details.get('raw_long_score', 0) > 30 or score_details.get('raw_short_score', 0) > 30:
-                    print(f"[{current_candle.name}] --- Analyzing Signal ---")
-                    
-                    # In điểm chi tiết
-                    bb_score = score_details.get('bb_score', 'L:0/S:0')
-                    st_score = score_details.get('st_score', 'L:0/S:0')
-                    rsi_score = score_details.get('rsi_score', 'L:0/S:0')
-                    macd_score = score_details.get('macd_score', 'L:0/S:0')
-                    print(f"  Scores -> BB: [{bb_score}] | ST: [{st_score}] | RSI: [{rsi_score}] | MACD: [{macd_score}]")
-
-                    # In điểm tổng
-                    print(f"  Long Score: {score_details.get('raw_long_score', 0):.2f} -> Filtered: {final_long:.2f}")
-                    print(f"  Short Score: {score_details.get('raw_short_score', 0):.2f} -> Filtered: {final_short:.2f}")
-                    
-                    # In quyết định
-                    entry_threshold = config_dict.get('ENTRY_SCORE_THRESHOLD', 75.0)
-                    if final_long > final_short and final_long >= entry_threshold:
-                        print(f"  DECISION: ENTER LONG (Score {final_long:.2f} >= Threshold {entry_threshold})")
-                    elif final_short > final_long and final_short >= entry_threshold:
-                        print(f"  DECISION: ENTER SHORT (Score {final_short:.2f} >= Threshold {entry_threshold})")
-                    else:
-                        print(f"  DECISION: DO NOTHING (Highest score below threshold)")
-                    print("  ---------------------------------")
-            # --- END DEBUGGING BLOCK ---
+            # Chỉ in log nếu có một trong hai phe có điểm thô > 0 để tránh làm loãng
+            if SHOW_DETAILED_LOG and (score_details.get("raw", {}).get("long_total", 0) > 0 or score_details.get("raw", {}).get("short_total", 0) > 0):
+                print_score_details(current_candle.name, score_details)
 
             if signal != 0:
                 entry_price = current_candle['open']
@@ -189,12 +204,13 @@ def run_backtest():
                             "sl_price": sl_price,
                             "tp_price": tp_price,
                             "initial_risk_usd": initial_risk,
-                            "score": score_details.get('final_decision_score', 0.0),
+                            "score": score_details.get("final", {}).get("decision_score", 0.0),
                             "tp1_hit": False,
                             "pp_triggered": False,
                             "peak_pnl_r": 0.0
                         }
                         active_trades.append(new_trade)
+                        print(f"[{current_candle.name}] >>> LỆNH {new_trade['type']} ĐƯỢC THỰC THI VỚI ĐIỂM {new_trade['score']:.1f} <<<")
 
     # 4. Đóng tất cả các lệnh còn lại vào cuối kỳ
     if active_trades:
@@ -209,7 +225,7 @@ def run_backtest():
             trade_history.append(trade)
 
     # 5. In Báo Cáo Kết Quả Nâng Cao
-    print("\n--- KẾT QUẢ BACKTEST (v5.1) ---")
+    print("\n--- KẾT QUẢ BACKTEST (v6.0) ---")
     print(f"Dữ liệu: {DATA_FILE_PATH} | Khung thời gian: {config.TIMEFRAME}")
     print("--------------------------------------------------")
     

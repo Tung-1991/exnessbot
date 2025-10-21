@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-# signals/rsi.py (v4.0 - Phase 4)
+# signals/rsi.py (v5.2 - Sửa lỗi KeyError triệt để và xử lý đa logic)
 
 import pandas as pd
+import numpy as np
 from typing import Optional, Dict, Any, Tuple
 
 def calculate_rsi(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     """
     Tính toán chỉ báo Relative Strength Index (RSI).
-    Hàm này không thay đổi vì logic tính toán RSI là không đổi.
     """
     if 'close' not in df.columns:
         return None
@@ -15,53 +15,71 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    
+    # Tránh lỗi chia cho 0
     rs = gain / loss
+    rs = rs.replace([np.inf, -np.inf], 100).fillna(100)
+
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
 def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
-    Tính điểm thô cho LONG và SHORT dựa trên các cấp độ RSI trong config.
-    Hàm này đã được viết lại hoàn toàn.
+    Tính điểm thô cho LONG và SHORT.
+    Hàm được nâng cấp để xử lý nhiều loại 'score_levels' một cách an toàn.
     """
-    cfg = config['SCORING_CONFIG']['RSI']
-    if not cfg['enabled']:
+    try:
+        cfg = config['RAW_SCORE_CONFIG']['RSI']
+    except KeyError:
+        return 0.0, 0.0
+
+    if not cfg.get('enabled', False) or len(df) < 2:
         return 0.0, 0.0
 
     rsi_series = calculate_rsi(df, period=cfg['params']['period'])
-    if rsi_series is None or rsi_series.empty:
+    if rsi_series is None or rsi_series.empty or pd.isna(rsi_series.iloc[-1]):
         return 0.0, 0.0
 
     last_rsi = rsi_series.iloc[-1]
+    prev_rsi = rsi_series.iloc[-2]
+    
     long_score, short_score = 0.0, 0.0
     
-    # --- Tính điểm cho phe MUA (LONG) ---
-    # Logic: RSI càng thấp (càng quá bán), điểm càng cao.
-    # Giả định 'score_levels' được sắp xếp từ yếu đến mạnh
-    if 'extreme' in cfg['score_levels'] and last_rsi < cfg['score_levels']['extreme']['threshold'][0]:
-        long_score = cfg['score_levels']['extreme']['score']
+    # --- PHÂN LOẠI VÀ XỬ LÝ ĐA LOGIC ---
     
-    if 'deep' in cfg['score_levels'] and last_rsi < cfg['score_levels']['deep']['threshold'][0]:
-        long_score = cfg['score_levels']['deep']['score'] # Ghi đè điểm cao hơn nếu thỏa mãn điều kiện sâu hơn
+    score_levels = cfg.get('score_levels', [])
+    
+    # 1. Xử lý các cấp độ dựa trên ngưỡng (threshold)
+    threshold_levels = [level for level in score_levels if 'threshold' in level]
+    if threshold_levels:
+        long_thresholds = sorted(threshold_levels, key=lambda x: x['threshold'])
+        short_thresholds = sorted(threshold_levels, key=lambda x: x['threshold'], reverse=True)
 
-    # --- Tính điểm cho phe BÁN (SHORT) ---
-    # Logic: RSI càng cao (càng quá mua), điểm càng cao.
-    if 'extreme' in cfg['score_levels'] and last_rsi > cfg['score_levels']['extreme']['threshold'][1]:
-        short_score = cfg['score_levels']['extreme']['score']
+        for level in long_thresholds:
+            if last_rsi < level['threshold']:
+                long_score = max(long_score, level['score']) # Luôn lấy điểm cao nhất
         
-    if 'deep' in cfg['score_levels'] and last_rsi > cfg['score_levels']['deep']['threshold'][1]:
-        short_score = cfg['score_levels']['deep']['score']
+        for level in short_thresholds:
+            if last_rsi > (100 - level['threshold']):
+                short_score = max(short_score, level['score']) # Luôn lấy điểm cao nhất
 
-    # Chuẩn hóa điểm theo trọng số (weight).
-    # Ví dụ: Nếu điểm thô là 15, weight là 10. Điểm cuối = 10 * (15 / 10) = 15.
-    # Tuy nhiên, để đơn giản, chúng ta sẽ để signal_generator xử lý việc nhân weight.
-    # Hàm này chỉ trả về điểm thô theo thang điểm của nó.
-    # signal_generator sẽ chuẩn hóa theo thang điểm 100.
-    
-    # Để đơn giản hóa, hàm này sẽ trả về điểm thô, và signal_generator sẽ nhân với weight
-    # Chúng ta cần chuẩn hóa thang điểm. Giả sử điểm tối đa có thể đạt là 15 (từ deep).
-    max_possible_score = max(level['score'] for level in cfg['score_levels'].values())
-    
+    # 2. Xử lý các cấp độ dựa trên sự kiện (level)
+    level_map = {level['level']: level['score'] for level in score_levels if 'level' in level}
+    if 'enter_zone' in level_map:
+        # Logic cho phe LONG (vừa đi vào vùng quá bán)
+        if prev_rsi >= 30 and last_rsi < 30:
+            long_score = max(long_score, level_map['enter_zone'])
+            
+        # Logic cho phe SHORT (vừa đi vào vùng quá mua)
+        if prev_rsi <= 70 and last_rsi > 70:
+            short_score = max(short_score, level_map['enter_zone'])
+            
+    # (Có thể thêm các logic cho "divergence" ở đây trong tương lai)
+
+    # --- CHUẨN HÓA ĐIỂM ---
+    all_scores = [level['score'] for level in score_levels]
+    max_possible_score = max(all_scores) if all_scores else 1
+
     final_long_score = (long_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
     final_short_score = (short_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
 
