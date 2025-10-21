@@ -1,95 +1,63 @@
 # -*- coding: utf-8 -*-
-# signals/supertrend.py
+# signals/supertrend.py (v4.3 - Sửa lỗi KeyError)
 
 import pandas as pd
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
+import pandas_ta as ta
 
 def calculate_supertrend(df: pd.DataFrame, atr_period: int = 10, multiplier: float = 3.0) -> Optional[pd.Series]:
     """
-    Tính toán chỉ báo SuperTrend.
-
-    Args:
-        df (pd.DataFrame): DataFrame chứa 'high', 'low', 'close'.
-        atr_period (int): Chu kỳ để tính ATR.
-        multiplier (float): Hệ số nhân cho ATR.
-
-    Returns:
-        pd.Series: Một Series chứa giá trị của đường SuperTrend.
+    Tính toán chỉ báo SuperTrend sử dụng thư viện pandas_ta.
+    Đã sửa lỗi KeyError bằng cách lấy cột đầu tiên của kết quả trả về.
     """
     if not all(col in df.columns for col in ['high', 'low', 'close']):
         return None
 
-    # Tính toán ATR
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1/atr_period, adjust=False).mean()
+    # Sử dụng thư viện pandas_ta, rất mạnh mẽ và đã được kiểm chứng
+    st = ta.supertrend(high=df['high'], low=df['low'], close=df['close'], length=atr_period, multiplier=multiplier)
+    
+    if st is None or st.empty:
+        return None
+        
+    # SỬA LỖI Ở ĐÂY:
+    # Thay vì truy cập bằng tên cột được hardcode, chúng ta lấy cột đầu tiên (iloc[:, 0]).
+    # Cột đầu tiên luôn là đường Supertrend chính.
+    # Điều này giúp code chống lại các thay đổi về cách đặt tên cột của thư viện trong tương lai.
+    return st.iloc[:, 0]
 
-    # Tính toán dải băng trên và dưới cơ bản
-    basic_upper_band = (df['high'] + df['low']) / 2 + multiplier * atr
-    basic_lower_band = (df['high'] + df['low']) / 2 - multiplier * atr
 
-    # Tính toán dải băng trên và dưới cuối cùng
-    final_upper_band = pd.Series(index=df.index, dtype=float)
-    final_lower_band = pd.Series(index=df.index, dtype=float)
-
-    for i in range(1, len(df)):
-        if basic_upper_band.iloc[i] < final_upper_band.iloc[i-1] or df['close'].iloc[i-1] > final_upper_band.iloc[i-1]:
-            final_upper_band.iloc[i] = basic_upper_band.iloc[i]
-        else:
-            final_upper_band.iloc[i] = final_upper_band.iloc[i-1]
-
-        if basic_lower_band.iloc[i] > final_lower_band.iloc[i-1] or df['close'].iloc[i-1] < final_lower_band.iloc[i-1]:
-            final_lower_band.iloc[i] = basic_lower_band.iloc[i]
-        else:
-            final_lower_band.iloc[i] = final_lower_band.iloc[i-1]
-
-    # Tính toán đường SuperTrend
-    supertrend = pd.Series(index=df.index, dtype=float)
-    for i in range(1, len(df)):
-        if supertrend.iloc[i-1] == final_upper_band.iloc[i-1] and df['close'].iloc[i] <= final_upper_band.iloc[i]:
-            supertrend.iloc[i] = final_upper_band.iloc[i]
-        elif supertrend.iloc[i-1] == final_upper_band.iloc[i-1] and df['close'].iloc[i] > final_upper_band.iloc[i]:
-            supertrend.iloc[i] = final_lower_band.iloc[i]
-        elif supertrend.iloc[i-1] == final_lower_band.iloc[i-1] and df['close'].iloc[i] >= final_lower_band.iloc[i]:
-            supertrend.iloc[i] = final_lower_band.iloc[i]
-        elif supertrend.iloc[i-1] == final_lower_band.iloc[i-1] and df['close'].iloc[i] < final_lower_band.iloc[i]:
-            supertrend.iloc[i] = final_upper_band.iloc[i]
-            
-    return supertrend
-
-def get_supertrend_score(df: pd.DataFrame, config: Dict[str, Any]) -> float:
+def get_supertrend_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
-    Xác định điểm số dựa trên xu hướng của SuperTrend.
-
-    Args:
-        df (pd.DataFrame): DataFrame chứa dữ liệu giá.
-        config (Dict[str, Any]): Toàn bộ file cấu hình.
-
-    Returns:
-        float: Điểm số cho tín hiệu (+ cho Mua, - cho Bán, 0 cho trung lập).
+    Tính điểm thô cho LONG và SHORT dựa trên vị trí của giá so với Supertrend.
     """
-    st_config = config['INDICATORS_CONFIG']['SUPERTREND']
-    weights = config['SCORING_WEIGHTS']
+    cfg = config['SCORING_CONFIG']['SUPERTREND']
+    if not cfg['enabled']:
+        return 0.0, 0.0
 
-    supertrend_series = calculate_supertrend(
+    st_series = calculate_supertrend(
         df, 
-        atr_period=st_config['ATR_PERIOD'], 
-        multiplier=st_config['MULTIPLIER']
+        atr_period=cfg['params']['atr_period'], 
+        multiplier=cfg['params']['multiplier']
     )
-    if supertrend_series is None or supertrend_series.empty:
-        return 0.0
+    # Thêm kiểm tra giá trị NaN để tránh lỗi
+    if st_series is None or st_series.empty or pd.isna(st_series.iloc[-1]):
+        return 0.0, 0.0
 
     last_close = df['close'].iloc[-1]
-    last_supertrend = supertrend_series.iloc[-1]
+    last_st = st_series.iloc[-1]
+    
+    long_score, short_score = 0.0, 0.0
+    
+    score_on_align = cfg['score_levels'].get('aligned_with_trend', 0)
 
-    # Logic xác định điểm số
-    # Nếu giá nằm trên đường SuperTrend -> Xu hướng tăng
-    if last_close > last_supertrend:
-        return weights['SUPERTREND_ALIGN_SCORE']  # Ví dụ: trả về +3.0
-    # Nếu giá nằm dưới đường SuperTrend -> Xu hướng giảm
-    elif last_close < last_supertrend:
-        return -weights['SUPERTREND_ALIGN_SCORE'] # Ví dụ: trả về -3.0
-    else:
-        return 0.0
+    if last_close > last_st:
+        long_score = score_on_align
+    elif last_close < last_st:
+        short_score = score_on_align
+        
+    max_possible_score = score_on_align
+    
+    final_long_score = (long_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
+    final_short_score = (short_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
+
+    return final_long_score, final_short_score
