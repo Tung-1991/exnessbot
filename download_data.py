@@ -16,11 +16,11 @@ except ImportError:
 
 # --- CẤU HÌNH ---
 CONFIG = {
-    "SYMBOL": "BTCUSD",
-    "TIMEFRAME": "15m",  # '1m', '5m', '15m', '1h', '4h', '1d'
+    "SYMBOL": "ETHUSD",
+    "TIMEFRAME": "1h",  # '1m', '5m', '15m', '1h', '4h', '1d'
     "MONTHS_TO_DOWNLOAD": 6,
     "OUTPUT_FOLDER": "data",
-    "OUTPUT_FILENAME": "ETHUSD_15m_6M.csv" # Tên file mà backtester.py cần
+    "OUTPUT_FILENAME": "ETHUSD_1h_6M.csv" # Tên file mà backtester.py cần
 }
 
 def parse_timeframe_to_minutes(tf_str: str) -> int:

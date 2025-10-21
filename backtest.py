@@ -12,7 +12,7 @@ from core.risk_manager import calculate_trade_details
 
 # --- CẤU HÌNH BACKTEST ---
 INITIAL_CAPITAL = 1000.0
-DATA_FILE_PATH = "data/ETHUSD_15m_6M.csv" # Đường dẫn tới file dữ liệu
+DATA_FILE_PATH = "data/ETHUSD_1h_6M.csv" # Đường dẫn tới file dữ liệu
 CONTRACT_SIZE = 1.0 # Kích thước hợp đồng (ví dụ: 1.0 cho 1 ETH)
 CANDLE_FETCH_COUNT = config.CANDLE_FETCH_COUNT # Số nến lịch sử cần để tính chỉ báo
 

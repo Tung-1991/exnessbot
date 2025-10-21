@@ -5,8 +5,8 @@
 # I. CẤU HÌNH CỐT LÕI
 # ==============================================================================
 SYMBOL = 'ETHUSD'               # Cặp tiền tệ để giao dịch
-TIMEFRAME = '15m'               # Khung thời gian chính ('1m', '5m', '15m'...)
-MAGIC_NUMBER = 20251021         # ID riêng để bot quản lý lệnh
+TIMEFRAME = '1h'                # Khung thời gian chính ('1m', '5m', '15m'...)
+MAGIC_NUMBER = 23051999         # ID riêng để bot quản lý lệnh
 
 ENABLE_LONG_TRADES = True       # (True/False) Cho phép bot vào lệnh LONG
 ENABLE_SHORT_TRADES = True      # (True/False) Cho phép bot vào lệnh SHORT
