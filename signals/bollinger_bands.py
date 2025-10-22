@@ -1,13 +1,16 @@
-# -*- coding: utf-8 -*-
-# signals/bollinger_bands.py (v5.1 - Sửa lỗi NameError)
+# Tên file: signals/bollinger_bands.py (Nâng cấp V6.0 - FINAL)
+# Mục đích: Tính toán Bollinger Bands và chấm điểm dựa trên 5 cấp độ logic
+#          để hỗ trợ cả chiến lược Trend-Following và Mean-Reversion.
 
 import pandas as pd
+import numpy as np
 from typing import Optional, Tuple, Dict, Any
 
+# --- HÀM TÍNH TOÁN BB GỐC ---
 def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) -> Optional[Tuple[pd.Series, pd.Series, pd.Series]]:
     """
     Tính toán 3 đường của chỉ báo Bollinger Bands.
-    Hàm này không thay đổi.
+    (Hàm này giữ nguyên như file gốc của bạn - nó đã chuẩn)
     """
     if 'close' not in df.columns:
         return None
@@ -19,84 +22,114 @@ def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: float
     
     return upper_band, middle_band, lower_band
 
-def get_bb_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH ---
+def get_bb_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) -> Tuple[float, float]:
     """
-    Tính điểm thô cho LONG và SHORT dựa trên 5 cấp độ tương tác với Bollinger Bands.
-    Hàm này đã được viết lại hoàn toàn để đọc cấu trúc range score từ config.
+    Tính điểm thô cho LONG và SHORT dựa trên 5 cấp độ thang điểm của BB.
+    'trend_bias' (1 cho Long, -1 cho Short, 0 cho Neutral) được truyền vào
+    để hỗ trợ logic "Middle Band Rejection" và "Walking the Band".
     """
-    try:
-        cfg = config['RAW_SCORE_CONFIG']['BOLLINGER_BANDS']
-    except KeyError:
-        return 0.0, 0.0 # Trả về 0 nếu config không đúng cấu trúc
-
-    if not cfg.get('enabled', False):
-        return 0.0, 0.0
-
-    bands = calculate_bollinger_bands(
-        df, 
-        period=cfg['params']['period'], 
-        std_dev=cfg['params']['std_dev']
-    )
-    if bands is None:
-        return 0.0, 0.0
-
-    upper_band, middle_band, lower_band = bands
-    
-    # Lấy dữ liệu của cây nến gần nhất
-    last_candle = df.iloc[-1]
-    last_close = last_candle['close']
-    last_low = last_candle['low']
-    last_high = last_candle['high']
-    last_open = last_candle['open']
-    
-    # Kiểm tra để đảm bảo có đủ dữ liệu
-    # === DÒNG SỬA LỖI Ở ĐÂY ===
-    if pd.isna(lower_band.iloc[-1]) or pd.isna(upper_band.iloc[-1]):
-        return 0.0, 0.0
-        
-    last_lower_band_val = lower_band.iloc[-1]
-    last_upper_band_val = upper_band.iloc[-1]
-    last_middle_band_val = middle_band.iloc[-1]
-
     long_score, short_score = 0.0, 0.0
     
-    # Tạo một dictionary để dễ dàng lấy điểm từ config
-    score_map = {level['level']: level['score'] for level in cfg.get('score_levels', [])}
+    try:
+        cfg = config['ENTRY_SIGNALS_CONFIG']['BOLLINGER_BANDS']
+        if not cfg.get('enabled', False):
+            return 0.0, 0.0
 
-    # --- LOGIC CHẤM ĐIỂM CHO PHE MUA (LONG) ---
-    # Duyệt từ tín hiệu mạnh nhất đến yếu nhất, nếu thỏa mãn thì lấy điểm và dừng lại
-    if 'cross_outside_full' in score_map and last_close < last_lower_band_val and last_open < last_lower_band_val:
-        long_score = score_map['cross_outside_full']
-    elif 'cross_outside_half_body' in score_map and last_close < last_lower_band_val and (last_open + last_close)/2 < last_lower_band_val:
-        long_score = score_map['cross_outside_half_body']
-    elif 'wick_outside' in score_map and last_low < last_lower_band_val:
-        long_score = score_map['wick_outside']
-    elif 'touch_band' in score_map and last_low <= last_lower_band_val and last_close > last_lower_band_val:
-        long_score = score_map['touch_band']
-    elif 'close_near' in score_map:
-        # Tính khoảng cách tương đối để xác định "gần"
-        band_width = last_upper_band_val - last_lower_band_val
-        if band_width > 0 and (last_close - last_lower_band_val) / band_width < 0.1: # Gần 10%
-             long_score = score_map['close_near']
+        params = cfg['params']
+        levels = cfg['score_levels']
+        
+        bands = calculate_bollinger_bands(
+            df, 
+            period=params['period'], 
+            std_dev=params['std_dev']
+        )
+        if bands is None:
+            return 0.0, 0.0
 
-    # --- LOGIC CHẤM ĐIỂM CHO PHE BÁN (SHORT) ---
-    if 'cross_outside_full' in score_map and last_close > last_upper_band_val and last_open > last_upper_band_val:
-        short_score = score_map['cross_outside_full']
-    elif 'cross_outside_half_body' in score_map and last_close > last_upper_band_val and (last_open + last_close)/2 > last_upper_band_val:
-        short_score = score_map['cross_outside_half_body']
-    elif 'wick_outside' in score_map and last_high > last_upper_band_val:
-        short_score = score_map['wick_outside']
-    elif 'touch_band' in score_map and last_high >= last_upper_band_val and last_close < last_upper_band_val:
-        short_score = score_map['touch_band']
-    elif 'close_near' in score_map:
-        band_width = last_upper_band_val - last_lower_band_val
-        if band_width > 0 and (last_upper_band_val - last_close) / band_width < 0.1: # Gần 10%
-            short_score = score_map['close_near']
+        upper_band, middle_band, lower_band = bands
+        
+        # Cần ít nhất 3 nến để so sánh
+        if len(df) < 3 or pd.isna(upper_band.iloc[-1]) or pd.isna(lower_band.iloc[-1]):
+            return 0.0, 0.0
             
-    # Chuẩn hóa điểm theo trọng số (weight)
-    max_possible_score = max(level['score'] for level in cfg.get('score_levels', [])) if cfg.get('score_levels') else 1
-    
-    final_long_score = (long_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
-    final_short_score = (short_score / max_possible_score) * cfg['weight'] if max_possible_score > 0 else 0
+        # Lấy dữ liệu 3 cây nến gần nhất
+        prev_candle_2 = df.iloc[-3]
+        prev_candle = df.iloc[-2]
+        last_candle = df.iloc[-1]
+        
+        # --- Logic 1: Squeeze & Breakout (Tín hiệu mạnh nhất, Ưu tiên 1) ---
+        # Định nghĩa Squeeze: Độ rộng dải băng hiện tại là hẹp nhất trong 50 nến
+        band_width = upper_band - lower_band
+        # (Sử dụng 1.05 để cho phép một chút "khoan dung" thay vì .min() tuyệt đối)
+        is_squeeze = band_width.iloc[-1] <= (band_width.rolling(window=50).min().iloc[-1] * 1.05)
 
-    return final_long_score, final_short_score
+        if is_squeeze:
+            # Breakout TĂNG từ Squeeze
+            if last_candle['close'] > upper_band.iloc[-1] and prev_candle['close'] <= upper_band.iloc[-2]:
+                long_score = max(long_score, levels['squeeze_breakout'])
+            # Breakout GIẢM từ Squeeze
+            elif last_candle['close'] < lower_band.iloc[-1] and prev_candle['close'] >= lower_band.iloc[-2]:
+                short_score = max(short_score, levels['squeeze_breakout'])
+        
+        # --- Chỉ kiểm tra các logic khác nếu KHÔNG CÓ SQUEEZE BREAKOUT ---
+        if long_score == 0 and short_score == 0:
+            
+            # --- Logic 2: "Walking the Band" (Bám dải - Tín hiệu Trend-Following, Ưu tiên 2) ---
+            # Điều kiện: Xu hướng H1 thuận, và 2 nến gần nhất đều đóng cửa BÊN NGOÀI dải băng
+            if trend_bias == 1 and \
+               last_candle['close'] > upper_band.iloc[-1] and \
+               prev_candle['close'] > upper_band.iloc[-2]:
+                long_score = max(long_score, levels['walking_the_band'])
+            
+            elif trend_bias == -1 and \
+                 last_candle['close'] < lower_band.iloc[-1] and \
+                 prev_candle['close'] < lower_band.iloc[-2]:
+                short_score = max(short_score, levels['walking_the_band'])
+
+            # --- Logic 3: Reversal Confirmation (Xác nhận Đảo chiều - Mean-Reversion, Ưu tiên 3) ---
+            # Điều kiện: Nến trước đó đóng cửa BÊN NGOÀI, nến hiện tại đóng cửa BÊN TRONG
+            # (Chỉ kích hoạt nếu Logic 2 không xảy ra)
+            if long_score == 0 and \
+               prev_candle['close'] < lower_band.iloc[-2] and \
+               last_candle['close'] > lower_band.iloc[-1] and \
+               last_candle['close'] > last_candle['open']: # Phải là nến tăng xác nhận
+                long_score = max(long_score, levels['reversal_confirmation'])
+
+            elif short_score == 0 and \
+                 prev_candle['close'] > upper_band.iloc[-2] and \
+                 last_candle['close'] < upper_band.iloc[-1] and \
+                 last_candle['close'] < last_candle['open']: # Phải là nến giảm xác nhận
+                short_score = max(short_score, levels['reversal_confirmation'])
+
+            # --- Logic 4: Middle Band Rejection (Bật lại từ dải giữa - Tín hiệu Trend-Following, Ưu tiên 4) ---
+            # Điều kiện: Xu hướng H1 thuận, giá chạm dải giữa và bật lại
+            if long_score == 0 and trend_bias == 1 and \
+               last_candle['low'] <= middle_band.iloc[-1] and \
+               last_candle['close'] > middle_band.iloc[-1] and \
+               last_candle['close'] > last_candle['open']: # Phải là nến tăng bật lên
+                long_score = max(long_score, levels['middle_band_rejection'])
+                
+            elif short_score == 0 and trend_bias == -1 and \
+                 last_candle['high'] >= middle_band.iloc[-1] and \
+                 last_candle['close'] < middle_band.iloc[-1] and \
+                 last_candle['close'] < last_candle['open']: # Phải là nến giảm bật xuống
+                short_score = max(short_score, levels['middle_band_rejection'])
+
+            # --- Logic 5: Wick Touch (Râu nến chạm - Tín hiệu Mean-Reversion yếu, Ưu tiên 5) ---
+            # Điều kiện: Râu nến chạm, thân nến vẫn ở bên trong.
+            if long_score == 0 and \
+               last_candle['low'] <= lower_band.iloc[-1] and \
+               last_candle['close'] > lower_band.iloc[-1]: # Thân nến đóng bên trong
+                long_score = max(long_score, levels['wick_touch'])
+                
+            elif short_score == 0 and \
+                 last_candle['high'] >= upper_band.iloc[-1] and \
+                 last_candle['close'] < upper_band.iloc[-1]: # Thân nến đóng bên trong
+                short_score = max(short_score, levels['wick_touch'])
+                
+    except Exception as e:
+        # print(f"Lỗi khi tính điểm Bollinger Bands: {e}")
+        pass
+
+    return long_score, short_score

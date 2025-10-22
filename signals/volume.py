@@ -1,46 +1,52 @@
-# -*- coding: utf-8 -*-
-# signals/volume.py (v5.0 - Logic Bậc Thang 5 Cấp)
+# Tên file: signals/volume.py (Nâng cấp V6.0 - FINAL)
+# Mục đích: Tính toán và chấm điểm cho Volume,
+#          dùng làm tín hiệu xác nhận cho Breakout hoặc Mô hình Nến.
 
 import pandas as pd
-from typing import Optional, Dict, Any
+from typing import Dict, Any, Tuple
 
-def get_volume_adjustment_score(df: pd.DataFrame, config: Dict[str, Any]) -> float:
+def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
-    Tính điểm thưởng/phạt dựa trên sức mạnh của volume.
-    Sử dụng cơ chế bậc thang 5 cấp dựa trên tỷ lệ so với volume trung bình.
+    Tính điểm cho Volume.
+    Chỉ cộng điểm nếu volume của cây nến cuối cùng đủ lớn (vượt qua MA * multiplier).
+    
+    Lưu ý: Logic này giả định rằng cây nến cuối cùng (df.iloc[-1]) 
+    CHÍNH LÀ cây nến tín hiệu (ví dụ: nến Breakout, nến Engulfing).
     """
+    # Mặc định là 0. Volume chỉ cộng điểm xác nhận, không bao giờ tự tạo tín hiệu.
+    long_score, short_score = 0.0, 0.0
+    
     try:
-        cfg = config['ADJUSTMENT_SCORE_CONFIG']['VOLUME_FILTER']
-    except KeyError:
-        return 0.0
+        cfg = config['ENTRY_SIGNALS_CONFIG']['VOLUME']
+        if not cfg.get('enabled', False) or 'volume' not in df.columns:
+            return 0.0, 0.0
 
-    if not cfg.get('enabled', False) or 'volume' not in df.columns:
-        return 0.0
-
-    # Tính toán volume trung bình
-    ma_period = cfg['params']['ma_period']
-    if len(df) < ma_period:
-        return 0.0
+        params = cfg['params']
         
-    volume_ma = df['volume'].rolling(window=ma_period).mean()
-    if pd.isna(volume_ma.iloc[-1]) or volume_ma.iloc[-1] == 0:
-        return 0.0
+        # 1. Tính toán Volume Trung bình (Volume MA)
+        volume_ma = df['volume'].rolling(window=params['ma_period']).mean()
+        
+        if volume_ma.empty or pd.isna(volume_ma.iloc[-1]):
+            return 0.0, 0.0
 
-    last_volume = df['volume'].iloc[-1]
-    avg_volume = volume_ma.iloc[-1]
-    
-    # Tính tỷ lệ để so sánh
-    ratio = last_volume / avg_volume
+        # 2. Lấy các giá trị cuối cùng
+        last_volume = df['volume'].iloc[-1]
+        avg_volume = volume_ma.iloc[-1]
+        
+        # 3. So sánh với ngưỡng
+        threshold_volume = avg_volume * params['multiplier']
+        
+        if last_volume > threshold_volume:
+            # Nếu volume lớn, nó xác nhận cho BẤT KỲ tín hiệu nào đang hình thành
+            # (cả Long và Short). 
+            # signal_generator sẽ quyết định điểm này được cộng vào đâu.
+            # Để đơn giản, chúng ta trả về điểm cho cả hai.
+            score = cfg['max_score']
+            long_score = score
+            short_score = score
 
-    final_score = 0
-    
-    # Sắp xếp các bậc thang theo ngưỡng tăng dần
-    tiers = sorted(cfg.get('score_tiers', []), key=lambda x: x['threshold_ratio'])
+    except Exception as e:
+        # print(f"Lỗi khi tính điểm Volume: {e}")
+        pass
 
-    # Duyệt từ trên xuống, tìm bậc thang phù hợp đầu tiên
-    for tier in tiers:
-        if ratio < tier['threshold_ratio']:
-            final_score = tier['score']
-            break
-            
-    return final_score # Trả về điểm thô (+15, -10, 0...)
+    return long_score, short_score
