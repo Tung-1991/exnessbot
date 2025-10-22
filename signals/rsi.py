@@ -102,7 +102,7 @@ def _find_divergence(price_data: pd.Series, indicator_data: pd.Series, lookback:
 
     return bullish_divergence, bearish_divergence
 
-# --- HÀM TÍNH ĐIỂM SỐ CHÍNH ---
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V6.0) ---
 def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) -> Tuple[float, float]:
     """
     Tính điểm thô cho LONG và SHORT dựa trên thang điểm chi tiết của RSI.
@@ -112,6 +112,7 @@ def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0)
     long_score, short_score = 0.0, 0.0
     
     try:
+        # ĐỌC CONFIG V6.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['RSI']
         if not cfg.get('enabled', False):
             return 0.0, 0.0
@@ -143,7 +144,7 @@ def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0)
         elif last_rsi > 70:
             short_score = max(short_score, levels['entry_zone'])
             
-        # --- Logic 3: Tín hiệu Momentum Vùng Trung tâm ---
+        # --- Logic 3: Tín hiệu Momentum Vùng Trung tâm (CẦN trend_bias) ---
         if trend_bias == 1: # Xu hướng H1 là TĂNG
             if prev_rsi <= 50 and last_rsi > 50:
                 long_score = max(long_score, levels['cross_midline'])
@@ -176,4 +177,6 @@ def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0)
         # print(f"Lỗi khi tính điểm RSI: {e}")
         pass
 
-    return long_score, short_score
+    # Áp dụng trần điểm
+    max_score = cfg.get('max_score', 30)
+    return min(long_score, max_score), min(short_score, max_score)

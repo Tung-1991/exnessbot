@@ -22,18 +22,18 @@ def get_adx_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, floa
     
     # Kiểm tra xem thư viện có tồn tại không
     if ta is None:
-        print("Bỏ qua tính điểm ADX do thiếu thư viện pandas_ta.")
+        # print("Bỏ qua tính điểm ADX do thiếu thư viện pandas_ta.")
         return 0.0, 0.0
 
     try:
-        # Lấy config
+        # ĐỌC CONFIG V6.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['ADX']
         if not cfg.get('enabled', False):
             return 0.0, 0.0
             
         period = cfg['params']['period']
         adx_threshold = cfg['threshold']
-        score = cfg['max_score']
+        score = cfg['max_score'] # Lấy điểm từ max_score
 
         # Sử dụng pandas_ta để tính toán ADX
         # Nó sẽ trả về 3 cột: ADX_14, DMP_14 (+DI), DMN_14 (-DI)
@@ -66,4 +66,5 @@ def get_adx_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, floa
         # print(f"Lỗi khi tính điểm ADX: {e}")
         pass
 
+    # Không cần áp trần vì điểm đã lấy từ max_score
     return long_score, short_score

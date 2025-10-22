@@ -22,7 +22,7 @@ def calculate_bollinger_bands(df: pd.DataFrame, period: int = 20, std_dev: float
     
     return upper_band, middle_band, lower_band
 
-# --- HÀM TÍNH ĐIỂM SỐ CHÍNH ---
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V6.0) ---
 def get_bb_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) -> Tuple[float, float]:
     """
     Tính điểm thô cho LONG và SHORT dựa trên 5 cấp độ thang điểm của BB.
@@ -32,6 +32,7 @@ def get_bb_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) 
     long_score, short_score = 0.0, 0.0
     
     try:
+        # ĐỌC CONFIG V6.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['BOLLINGER_BANDS']
         if not cfg.get('enabled', False):
             return 0.0, 0.0
@@ -76,7 +77,7 @@ def get_bb_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) 
         if long_score == 0 and short_score == 0:
             
             # --- Logic 2: "Walking the Band" (Bám dải - Tín hiệu Trend-Following, Ưu tiên 2) ---
-            # Điều kiện: Xu hướng H1 thuận, và 2 nến gần nhất đều đóng cửa BÊN NGOÀI dải băng
+            # Điều kiện: Xu hướng H1 thuận (trend_bias != 0), và 2 nến gần nhất đều đóng cửa BÊN NGOÀI
             if trend_bias == 1 and \
                last_candle['close'] > upper_band.iloc[-1] and \
                prev_candle['close'] > upper_band.iloc[-2]:
@@ -103,7 +104,7 @@ def get_bb_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) 
                 short_score = max(short_score, levels['reversal_confirmation'])
 
             # --- Logic 4: Middle Band Rejection (Bật lại từ dải giữa - Tín hiệu Trend-Following, Ưu tiên 4) ---
-            # Điều kiện: Xu hướng H1 thuận, giá chạm dải giữa và bật lại
+            # Điều kiện: Xu hướng H1 thuận (trend_bias != 0), giá chạm dải giữa và bật lại
             if long_score == 0 and trend_bias == 1 and \
                last_candle['low'] <= middle_band.iloc[-1] and \
                last_candle['close'] > middle_band.iloc[-1] and \
@@ -132,4 +133,6 @@ def get_bb_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) 
         # print(f"Lỗi khi tính điểm Bollinger Bands: {e}")
         pass
 
-    return long_score, short_score
+    # Áp dụng trần điểm
+    max_score = cfg.get('max_score', 30)
+    return min(long_score, max_score), min(short_score, max_score)

@@ -78,7 +78,7 @@ def _find_divergence(price_data: pd.Series, indicator_data: pd.Series, lookback:
 
     return bullish_divergence, bearish_divergence
 
-# --- HÀM TÍNH ĐIỂM SỐ CHÍNH ---
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V6.0) ---
 def get_macd_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
     Tính điểm thô cho LONG và SHORT dựa trên thang điểm chi tiết của MACD,
@@ -87,6 +87,7 @@ def get_macd_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, flo
     long_score, short_score = 0.0, 0.0
     
     try:
+        # ĐỌC CONFIG V6.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['MACD']
         if not cfg.get('enabled', False):
             return 0.0, 0.0
@@ -174,4 +175,6 @@ def get_macd_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, flo
         # print(f"Lỗi khi tính điểm MACD: {e}")
         pass
 
-    return long_score, short_score
+    # Áp dụng trần điểm
+    max_score = cfg.get('max_score', 25)
+    return min(long_score, max_score), min(short_score, max_score)

@@ -17,6 +17,7 @@ def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, f
     long_score, short_score = 0.0, 0.0
     
     try:
+        # ĐỌC CONFIG V6.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['VOLUME']
         if not cfg.get('enabled', False) or 'volume' not in df.columns:
             return 0.0, 0.0
@@ -41,7 +42,7 @@ def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, f
             # (cả Long và Short). 
             # signal_generator sẽ quyết định điểm này được cộng vào đâu.
             # Để đơn giản, chúng ta trả về điểm cho cả hai.
-            score = cfg['max_score']
+            score = cfg['max_score'] # Lấy điểm từ max_score
             long_score = score
             short_score = score
 
@@ -49,4 +50,5 @@ def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, f
         # print(f"Lỗi khi tính điểm Volume: {e}")
         pass
 
+    # Không cần áp trần
     return long_score, short_score

@@ -30,7 +30,7 @@ def calculate_supertrend(df: pd.DataFrame, atr_period: int = 10, multiplier: flo
     # Trả về cột đầu tiên (chứa giá trị của đường Supertrend)
     return st.iloc[:, 0]
 
-# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI) ---
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V6.0) ---
 def get_supertrend_score(df_trend: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
     Tính điểm Trend Bias dựa trên vị trí của giá so với Supertrend
@@ -39,13 +39,13 @@ def get_supertrend_score(df_trend: pd.DataFrame, config: Dict[str, Any]) -> Tupl
     long_score, short_score = 0.0, 0.0
     
     try:
-        # Lấy config
+        # ĐỌC CONFIG V6.0 (TREND_FILTERS_CONFIG)
         cfg = config['TREND_FILTERS_CONFIG']['SUPERTREND']
         if not cfg.get('enabled', False):
             return 0.0, 0.0
             
         params = cfg['params']
-        score = cfg['max_score']
+        score = cfg['max_score'] # Lấy điểm từ max_score
 
         # Tính toán Supertrend trên dataframe H1
         st_series = calculate_supertrend(
