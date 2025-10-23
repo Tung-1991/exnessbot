@@ -2,5 +2,5 @@ exnessvenv/*
 .env
 data/*
 /__pycache__/*
-signals/__pycache__
-core/__pycache__
+signals/__pycache__/
+core/__pycache__/*
