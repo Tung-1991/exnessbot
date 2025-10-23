@@ -1,42 +1,33 @@
 # -*- coding: utf-8 -*-
-# config.py - Trung tâm Quyền lực Exness Bot (v6.0 - FINAL)
-# ĐÃ ĐƯỢC CẬP NHẬT ĐỂ TƯƠNG THÍCH 100% VỚI CÁC FILE v6.0 CỦA BẠN
+# config.py - Trung tâm Quyền lực Exness Bot (Bản Final V8.1)
+# ĐÃ CẬP NHẬT ĐÚNG THANG ĐIỂM 70/50/30
 
 # ==============================================================================
-# I. CẤU HÌNH CỐT LÕI
+# I. CẤU HÌNH CỐT LÕI (Giữ nguyên)
 # ==============================================================================
 SYMBOL = 'ETHUSD'
-TIMEFRAME = '15m'               # Khung thời gian GIAO DỊCH CHÍNH
-TREND_TIMEFRAME = '1h'          # Khung thời gian XU HƯỚNG (để tính Supertrend, EMA 200...)
+TIMEFRAME = '15m'
+TREND_TIMEFRAME = '1h'
 MAGIC_NUMBER = 23051999
 
 ENABLE_LONG_TRADES = True
 ENABLE_SHORT_TRADES = True
-MAX_ACTIVE_TRADES = 1           # (Điểm 9) Giới hạn tổng số lệnh được mở cùng lúc
-COOLDOWN_CANDLES = 0            # Số nến chờ sau khi 1 lệnh (thắng hoặc thua) đóng
+MAX_ACTIVE_TRADES = 1
+COOLDOWN_CANDLES = 0
 
 # ==============================================================================
-# II. HỆ THỐNG VÀO LỆNH 3 CẤP (Điểm 9)
+# II. HỆ THỐNG VÀO LỆNH 3 CẤP (Giữ nguyên)
 # ==============================================================================
-# Bot sẽ so sánh TỔNG ĐIỂM (ví dụ 130) với 3 mốc này để quyết định "Cấp độ Tự tin"
-# CẤU TRÚC SỬA LẠI THÀNH LIST (để khớp với trade_manager.py)
-ENTRY_SCORE_LEVELS = [90.0, 120.0, 150.0] # Tương ứng Cấp 1, Cấp 2, Cấp 3
+# TỔNG ĐIỂM TỐI ĐA (V8.1): 70+70+70(RSI) + 50+50+50(Nến) + 30+30(Vol) = 400
+ENTRY_SCORE_LEVELS = [90.0, 120.0, 150.0] # Cấp 1, Cấp 2, Cấp 3
 
 # ==============================================================================
-# III. QUẢN LÝ VỐN (POSITION SIZING - Điểm 5)
+# III. QUẢN LÝ VỐN (Giữ nguyên)
 # ==============================================================================
-# --- CHỌN 1 TRONG 2 CƠ CHẾ ---
-ENABLE_FIXED_LOT_SIZING = False # True: Dùng Lot Cố Định. False: Dùng % Rủi ro
-
-# 1. Cấu hình Lot Cố Định (nếu ENABLE_FIXED_LOT_SIZING = True)
-# Tương ứng với 3 Cấp độ Tự tin (Cấp 1, 2, 3)
+ENABLE_FIXED_LOT_SIZING = False 
 FIXED_LOT_LEVELS = [0.1, 0.2, 0.3]
-
-# 2. Cấu hình % Rủi ro (nếu ENABLE_FIXED_LOT_SIZING = False)
-# Tương ứng với 3 Cấp độ Tự tin (Cấp 1, 2, 3)
 RISK_PERCENT_LEVELS = [1.0, 1.5, 2.0]
-
-# --- Bộ lọc an toàn cho % Rủi ro ---
+# (Các bộ lọc an toàn khác giữ nguyên)
 MAX_SL_PERCENT_OF_PRICE = 5.0
 MIN_SL_PERCENT_OF_PRICE = 0.5
 FORCE_MINIMUM_DISTANCE = True
@@ -45,128 +36,128 @@ FORCED_MIN_LOT_SIZE = 0.1
 MAX_FORCED_RISK_PERCENT = 5.0
 
 # ==============================================================================
-# IV. LOGIC THOÁT LỆNH (HYBRID EXIT - Điểm 4)
+# IV. LOGIC THOÁT LỆNH (Giữ nguyên)
 # ==============================================================================
-
-# --- Cơ chế 1: Thoát lệnh theo Điểm số (Score-Based Exit) ---
-ENABLE_SCORE_BASED_EXIT = True  # True: Bật tính năng thoát lệnh khi điểm số sụt giảm
-EXIT_SCORE_THRESHOLD = 40.0     # Nếu điểm Long/Short rớt xuống DƯỚI ngưỡng này, lệnh sẽ đóng
-EXIT_PARTIAL_CLOSE_PERCENT = 100.0 # Thoát 100% lệnh (hoặc 50% nếu muốn)
-
-# --- Cơ chế 2: Thoát lệnh theo ATR (Cũng được điều chỉnh theo 3 Cấp độ) ---
-# CẤU TRÚC SỬA LẠI THÀNH 2 LIST RIÊNG (để khớp với risk_manager.py)
-# Tương ứng với 3 Cấp độ Tự tin (Cấp 1, 2, 3)
+ENABLE_SCORE_BASED_EXIT = True
+EXIT_SCORE_THRESHOLD = 40.0
+# (Các cấu hình TSL, TP1, PP khác giữ nguyên)
 ATR_SL_MULTIPLIER_LEVELS = [2.0, 2.2, 2.5]
 ATR_TP_MULTIPLIER_LEVELS = [3.0, 4.0, 5.0]
-
-# --- Cơ chế 3: Quản lý lệnh Năng động (TSL, TP1, PP) ---
 ACTIVE_TRADE_MANAGEMENT = {
-    "ENABLE_TSL": True,
-    "TSL_ATR_MULTIPLIER": 2.5,
-
-    "ENABLE_TP1": True,
-    "TP1_RR_RATIO": 1.0,
-    "TP1_PARTIAL_CLOSE_PERCENT": 50.0,
-    "TP1_MOVE_SL_TO_ENTRY": True,
-
-    "ENABLE_PROTECT_PROFIT": True,
-    "PP_MIN_PEAK_R_TRIGGER": 1.2,
-    "PP_DROP_R_TRIGGER": 0.4,
-    "PP_PARTIAL_CLOSE_PERCENT": 50.0,
-    "PP_MOVE_SL_TO_ENTRY": True,
+    "ENABLE_TSL": True, "TSL_ATR_MULTIPLIER": 2.5,
+    "ENABLE_TP1": True, "TP1_RR_RATIO": 1.0, "TP1_PARTIAL_CLOSE_PERCENT": 50.0, "TP1_MOVE_SL_TO_ENTRY": True,
+    "ENABLE_PROTECT_PROFIT": True, "PP_MIN_PEAK_R_TRIGGER": 1.2, "PP_DROP_R_TRIGGER": 0.4, "PP_PARTIAL_CLOSE_PERCENT": 50.0, "PP_MOVE_SL_TO_ENTRY": True,
 }
 
 # ==============================================================================
-# V. CẤU HÌNH BỘ LỌC XU HƯỚNG (TREND FILTERS - MTF)
+# V. CẤU HÌNH INDICATORS KHUNG H1 (Nâng cấp V8.1 - ĐÚNG THANG ĐIỂM 50)
 # ==============================================================================
 TREND_FILTERS_CONFIG = {
-    # Khớp 100% với signal_generator.py của bạn
-    "USE_TREND_FILTER": "BOTH", # "BOTH", "SUPERTREND", "EMA", hoặc "NONE"
-
     "SUPERTREND": {
         "enabled": True,
-        "params": {"atr_period": 10, "multiplier": 3.0}
+        "MAX_SCORE": 50, # SỬA ĐÚNG TRẦN 50 ĐIỂM
+        "params": {
+            "atr_period": 10, 
+            "multiplier": 3.0,
+            "full_score_atr_distance": 2.0 
+        }
     },
     "EMA": { 
         "enabled": True,
-        "params": {"period": 200}
+        "MAX_SCORE": 50, # SỬA ĐÚNG TRẦN 50 ĐIỂM
+        "params": {
+            "period": 200,
+            "atr_period": 14,
+            "full_score_atr_distance": 2.0
+        }
     }
 }
 
 # ==============================================================================
-# VI. CẤU HÌNH TÍN HIỆU VÀO LỆNH (ENTRY SIGNALS)
+# VI. CẤU HÌNH INDICATORS KHUNG M15 (NÂNG CẤP V8.1 - ĐÚNG THANG ĐIỂM)
 # ==============================================================================
-# Khớp 100% với signal_generator.py của bạn (dùng MAX_SCORE viết hoa)
 ENTRY_SIGNALS_CONFIG = {
 
     "BOLLINGER_BANDS": {
         "enabled": True,
-        "MAX_SCORE": 30, 
+        "MAX_SCORE": 70, # Trần 70 điểm (Logic V8.0 Cộng hưởng)
         "params": {"period": 20, "std_dev": 2.0},
-        "score_levels": {
-            "squeeze_breakout": 30,
-            "walking_the_band": 25,
-            "reversal_confirmation": 20,
-            "middle_band_rejection": 15,
-            "wick_touch": 5
+        "v8_score_levels": {
+            "CONTEXT": { "squeeze_score": 20, "squeeze_threshold_pct": 2.5, "expansion_score": 10, "expansion_threshold_pct": 8.0 },
+            "POSITION": { "max_score": 30, "neutral_level_long": 0.5, "full_score_level_long": 0.0, "neutral_level_short": 0.5, "full_score_level_short": 1.0 },
+            "PRICE_ACTION": { "fakey_reversal_score": 20, "walking_the_band_score": 20, "middle_band_bounce_score": 15 }
         }
     },
-    "RSI": {
-        "enabled": True,
-        "MAX_SCORE": 30, 
-        "params": {"period": 14},
-        "score_levels": {
-            "divergence": 30,
-            "deep_zone": 20,
-            "oversold_overbought": 15,
-            "entry_zone": 10,
-            "cross_midline": 10,
-            "above_below_midline": 5
-        }
-    },
+
     "MACD": {
         "enabled": True,
-        "MAX_SCORE": 25, 
+        "MAX_SCORE": 70, # Trần 70 điểm (Logic V8.0 Cộng hưởng)
         "params": {"fast_ema": 12, "slow_ema": 26, "signal_sma": 9},
-        "score_levels": {
-            "divergence": 25,
-            "zero_line_cross": 20,
-            "signal_cross": 10,
-            "histogram_momentum": 5
+        "v8_score_levels": {
+            "TREND": { "max_score": 25, "full_score_value_norm": 0.5 },
+            "MOMENTUM": { "max_score": 15, "full_score_value_norm": 0.1 },
+            "SIGNALS": { "divergence_score": 30, "signal_cross_score": 15 }
         }
     },
+    
+    "RSI": {
+        "enabled": True,
+        "MAX_SCORE": 70, # SỬA ĐÚNG TRẦN 70 ĐIỂM
+        "params": {"period": 14},
+        # (Giữ nguyên cấu hình NỘI SUY V7.0)
+        # LƯU Ý: Tổng điểm của 2 yếu tố (momentum + divergence) CÓ THỂ vượt 70
+        # nhưng MAX_SCORE sẽ giới hạn nó lại ở 70.
+        "score_levels": {
+            "max_momentum_score": 40, # Nâng điểm momentum
+            "neutral_level": 50.0,
+            "full_score_level_long": 30.0,
+            "full_score_level_short": 70.0,
+            "divergence_score": 30 # Cộng thêm 30 nếu có phân kỳ
+        }
+    },
+    
     "CANDLE_PATTERNS": {
         "enabled": True,
-        "MAX_SCORE": 20, 
+        "MAX_SCORE": 50, # SỬA ĐÚNG TRẦN 50 ĐIỂM
+        # (Giữ nguyên cấu hình "Trừu tượng" V7.0)
         "score_levels": {
-            "strong_signal": 20,
-            "medium_signal": 10
+            "momentum_max_score": 30, # Nâng điểm momentum
+            "momentum_neutral_ratio": 0.1,
+            "momentum_full_ratio": 0.9,
+            "rejection_max_score": 20, # Nâng điểm rejection
+            "rejection_neutral_ratio": 0.1,
+            "rejection_full_ratio": 0.7
         }
     },
+    
     "ADX": {
         "enabled": True,
-        "MAX_SCORE": 10, 
+        "MAX_SCORE": 30, # SỬA ĐÚNG TRẦN 30 ĐIỂM
         "params": {"period": 14},
-        "threshold": 25
+        # (Cấu hình NỘI SUY v8.1 - "Tinh chỉnh")
+        "score_levels": {
+            "neutral_level": 18.0,
+            "full_score_level": 35.0
+        }
     },
+    
     "VOLUME": {
         "enabled": True,
-        "MAX_SCORE": 5, 
-        "params": {
-            "ma_period": 20,
-            "multiplier": 1.5
+        "MAX_SCORE": 30, # SỬA ĐÚNG TRẦN 30 ĐIỂM
+        "params": {"ma_period": 20},
+        # (Cấu hình BẬC THANG v8.1 - "Tinh chỉnh")
+        "score_levels": {
+            "high_volume_multiplier": 1.2,
+            "high_score": 15, # Nâng điểm
+            "spike_volume_multiplier": 2.0,
+            "spike_score": 30 # Nâng điểm
         }
     }
 }
 
 # ==============================================================================
-# VIII. CẤU HÌNH HỆ THỐNG
+# VIII. CẤU HÌNH HỆ THỐNG (Giữ nguyên)
 # ==============================================================================
-CANDLE_FETCH_COUNT = 300      # Số nến lịch sử cần để tính toán các chỉ báo
-LOOP_SLEEP_SECONDS = 2        # Thời gian chờ giữa các lần quét (cho bot live)
-
-# Cấu hình chỉ báo ATR gốc (Dùng chung cho TSL và Risk Manager)
-INDICATORS_CONFIG = {
-    "ATR": {"PERIOD": 14}
-}
-# (risk_manager.py của bạn đã đọc ATR_PERIOD từ đây, rất chuẩn)
+CANDLE_FETCH_COUNT = 300
+LOOP_SLEEP_SECONDS = 2
+INDICATORS_CONFIG = { "ATR": {"PERIOD": 14} }

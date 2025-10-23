@@ -1,22 +1,18 @@
 # -*- coding: utf-8 -*-
-# backtest.py (v6.0 - Final - Hỗ trợ MTF & Hybrid ATR)
+# backtest.py (v8.0 - Tương thích Logic Cộng hưởng V8.0)
 
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List
 import logging
 
-# --- BƯỚC 1: IMPORT CÁC MODULE v6.0 ---
-# Import config v6.0 (File Bước 1)
+# --- BƯỚC 1: IMPORT CÁC MODULE v8.0 ---
 import config 
-# Import hàm tính điểm v6.0 (File Bước 2)
 from signals.signal_generator import get_final_signal
-# Import hàm quản lý vốn v6.0 (File Bước 3)
 from core.risk_manager import calculate_trade_details
-# Import hàm tính ATR (cho TSL)
 from signals.atr import calculate_atr
 
-# Thiết lập logger (để xem log debug của các hàm)
+# Thiết lập logger
 logger = logging.getLogger("ExnessBot")
 if not logger.hasHandlers():
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -24,45 +20,50 @@ if not logger.hasHandlers():
 # --- BƯỚC 2: CẤU HÌNH BACKTEST ---
 INITIAL_CAPITAL = 1000.0
 
-# --- CẤU HÌNH DATA ĐA KHUNG (MTF) ---
-# Quan trọng: Đảm bảo 2 file này khớp với config.TIMEFRAME và config.TREND_TIMEFRAME
-DATA_FILE_PATH_MAIN = "data/ETHUSD_15m_6M.csv" # Dữ liệu cho config.TIMEFRAME
-DATA_FILE_PATH_TREND = "data/ETHUSD_1h_6M.csv"  # Dữ liệu cho config.TREND_TIMEFRAME
+DATA_FILE_PATH_MAIN = "data/ETHUSD_15m_6M.csv" 
+DATA_FILE_PATH_TREND = "data/ETHUSD_1h_6M.csv"
 
-CONTRACT_SIZE = 1.0 # Kích thước hợp đồng (1.0 cho 1 ETH)
-CANDLE_FETCH_COUNT = config.CANDLE_FETCH_COUNT # Số nến lịch sử cần để tính chỉ báo
+CONTRACT_SIZE = 1.0
+CANDLE_FETCH_COUNT = config.CANDLE_FETCH_COUNT
+SHOW_DETAILED_LOG = True # Đặt True để xem log chi tiết V8.0
 
-# Đặt thành True để xem bảng phân tích điểm số chi tiết của từng tín hiệu.
-SHOW_DETAILED_LOG = True
-
-# Lấy config dictionary v6.0 (quan trọng)
+# Lấy config dictionary v8.0 (quan trọng)
 config_dict = config.__dict__
 
 def print_score_details(timestamp: Any, details: Dict[str, Any]):
     """
-    In ra bảng phân tích điểm số chi tiết v6.0.
+    In ra bảng phân tích điểm số chi tiết V8.0 (Đã xóa bỏ trend_bias).
+    Hàm này sắp xếp các chỉ báo theo 2 khung thời gian (M15 và H1).
     """
     long_scores = details.get("long", {})
     short_scores = details.get("short", {})
-    trend_bias = details.get("trend_bias", 0)
     
     long_total = sum(long_scores.values())
     short_total = sum(short_scores.values())
-    
-    trend_str = "TĂNG (Bias: 1)" if trend_bias == 1 else ("GIẢM (Bias: -1)" if trend_bias == -1 else "NEUTRAL (Bias: 0)")
 
-    # --- Bắt đầu in ---
-    print(f"[{timestamp}] --- PHÂN TÍCH TÍN HIỆU (Xu hướng H1: {trend_str}) ---")
+    # Tách 6 chỉ báo M15 và 2 chỉ báo H1
+    m15_indicators = ['BB', 'RSI', 'MACD', 'Candle', 'ADX', 'Volume']
+    h1_indicators = ['ST_H1', 'EMA_H1']
+
+    print(f"[{timestamp}] --- PHÂN TÍCH TÍN HIỆU V8.0 ---")
     
     # --- PHE LONG ---
     print(f"==> PHE LONG (Tổng: {long_total:.1f})")
-    long_str = " | ".join([f"{k}: {v:.1f}" for k, v in long_scores.items() if v > 0])
-    print(f"    {long_str if long_str else 'Không có điểm'}")
+    # In điểm M15
+    long_m15 = " | ".join([f"{k}: {long_scores.get(k, 0.0):.1f}" for k in m15_indicators if long_scores.get(k, 0.0) > 0])
+    print(f"    [M15]: {long_m15 if long_m15 else 'Không có điểm'}")
+    # In điểm H1
+    long_h1 = " | ".join([f"{k}: {long_scores.get(k, 0.0):.1f}" for k in h1_indicators if long_scores.get(k, 0.0) > 0])
+    if long_h1: print(f"    [H1]:  {long_h1}")
 
     # --- PHE SHORT ---
     print(f"\n==> PHE SHORT (Tổng: {short_total:.1f})")
-    short_str = " | ".join([f"{k}: {v:.1f}" for k, v in short_scores.items() if v > 0])
-    print(f"    {short_str if short_str else 'Không có điểm'}")
+    # In điểm M15
+    short_m15 = " | ".join([f"{k}: {short_scores.get(k, 0.0):.1f}" for k in m15_indicators if short_scores.get(k, 0.0) > 0])
+    print(f"    [M15]: {short_m15 if short_m15 else 'Không có điểm'}")
+    # In điểm H1
+    short_h1 = " | ".join([f"{k}: {short_scores.get(k, 0.0):.1f}" for k in h1_indicators if short_scores.get(k, 0.0) > 0])
+    if short_h1: print(f"    [H1]:  {short_h1}")
     
     print("="*60)
 
@@ -78,8 +79,6 @@ def prepare_data():
         print(f"LỖI: Không tìm thấy file dữ liệu: {e.filename}")
         return None, None
         
-    # Đồng bộ hóa: Đảm bảo df_main chỉ chứa các nến mà df_trend cũng có
-    # (Ví dụ: nến 15m, 30m, 45m sẽ được giữ lại nếu nến 00m tồn tại)
     df_main = df_main[df_main.index.floor('h').isin(df_trend.index)]
     
     if df_main.empty:
@@ -90,7 +89,7 @@ def prepare_data():
     return df_main, df_trend
 
 def run_backtest():
-    print("--- Bắt đầu chạy Backtest (v6.0 - MTF & Hybrid ATR) ---")
+    print("--- Bắt đầu chạy Backtest (v8.0 - Cộng hưởng & Tinh chỉnh) ---")
     
     # 1. Tải và chuẩn bị dữ liệu MTF
     df_main, df_trend = prepare_data()
@@ -110,23 +109,20 @@ def run_backtest():
     for i in range(CANDLE_FETCH_COUNT, len(df_main)):
         
         # --- LẤY DATA SLICE (MTF) ---
-        # Data chính (15m)
         historical_df_main = df_main.iloc[i - CANDLE_FETCH_COUNT : i]
         current_candle_main = df_main.iloc[i]
         
-        # Data xu hướng (1h)
-        # Tìm nến 1h tương ứng với nến 15m hiện tại
         current_trend_time = current_candle_main.name.floor('h')
         trend_index_loc = df_trend.index.get_loc(current_trend_time)
         historical_df_trend = df_trend.iloc[trend_index_loc - CANDLE_FETCH_COUNT : trend_index_loc]
 
         if historical_df_trend.empty:
-            continue # Bỏ qua nếu không có đủ data xu hướng
+            continue 
 
-        # --- A. QUẢN LÝ LỆNH MỞ (Hybrid ATR - Điểm 4 & TSL - Điểm 7) ---
+        # --- A. QUẢN LÝ LỆNH MỞ (Logic Thoát lệnh V7.0 - Giữ nguyên) ---
         trade_management_config = config_dict.get('ACTIVE_TRADE_MANAGEMENT', {})
         
-        # Tính toán score MỚI NHẤT cho logic thoát lệnh (Điểm 4)
+        # Lấy score MỚI NHẤT cho logic Thoát lệnh (Score-Based Exit)
         current_long_score, current_short_score, _ = get_final_signal(
             historical_df_main, historical_df_trend, config_dict
         )
@@ -134,22 +130,18 @@ def run_backtest():
         for trade in active_trades[:]:
             pnl = 0.0
             is_long = trade['type'] == 'LONG'
-            
-            # Giá hiện tại (giả định khớp ở giá Mở cửa của nến tiếp theo)
             current_price = current_candle_main['open']
             
-            # Tính PnL (R:R)
             price_change = (current_price - trade['entry_price']) if is_long else (trade['entry_price'] - current_price)
             pnl_usd = price_change * trade['lot_size'] * CONTRACT_SIZE
             pnl_r = pnl_usd / trade['initial_risk_usd'] if trade['initial_risk_usd'] > 0 else 0.0
             trade['peak_pnl_r'] = max(trade.get('peak_pnl_r', 0.0), pnl_r)
 
-            # --- Check 5 ĐIỀU KIỆN THOÁT LỆNH (Song song) ---
             trade_closed = False
             close_price = 0.0
             close_reason = "Unknown"
 
-            # 1. Thoát lệnh theo SL/TP (ATR 3 Cấp)
+            # 1. Check SL/TP (ATR 3 Cấp)
             if is_long:
                 if current_candle_main['low'] <= trade['sl_price']:
                     trade_closed = True; close_price = trade['sl_price']; close_reason = "Stop Loss"
@@ -161,27 +153,25 @@ def run_backtest():
                 elif current_candle_main['low'] <= trade['tp_price']:
                     trade_closed = True; close_price = trade['tp_price']; close_reason = "Take Profit"
 
-            # 2. Thoát lệnh theo TSL (Điểm 7)
+            # 2. Check TSL
             if not trade_closed and trade_management_config.get("ENABLE_TSL"):
-                atr_series = calculate_atr(historical_df_main, config.ATR_PERIOD)
-                current_atr = atr_series.iloc[-1] 
-                trail_distance = current_atr * trade_management_config.get('TSL_ATR_MULTIPLIER', 2.5)
-                
-                if is_long:
-                    new_potential_sl = current_price - trail_distance
-                    if new_potential_sl > trade['sl_price']: trade['sl_price'] = new_potential_sl
-                else:
-                    new_potential_sl = current_price + trail_distance
-                    if new_potential_sl < trade['sl_price']: trade['sl_price'] = new_potential_sl
-                # (Logic TSL đã được tích hợp vào check SL/TP ở trên)
-            
-            # 3 & 4. Thoát lệnh theo TP1 & PP (Điểm 7)
+                atr_series = calculate_atr(historical_df_main, config.INDICATORS_CONFIG['ATR']['PERIOD'])
+                if atr_series is not None and not atr_series.empty:
+                    current_atr = atr_series.iloc[-1] 
+                    trail_distance = current_atr * trade_management_config.get('TSL_ATR_MULTIPLIER', 2.5)
+                    
+                    if is_long:
+                        new_potential_sl = current_price - trail_distance
+                        if new_potential_sl > trade['sl_price']: trade['sl_price'] = new_potential_sl
+                    else:
+                        new_potential_sl = current_price + trail_distance
+                        if new_potential_sl < trade['sl_price']: trade['sl_price'] = new_potential_sl
+
+            # 3 & 4. Check TP1 & PP
             if not trade_closed and trade_management_config.get("ENABLE_TP1") and not trade.get("tp1_hit") and pnl_r >= trade_management_config.get("TP1_RR_RATIO", 1.0):
                 trade['tp1_hit'] = True
                 if trade_management_config.get("TP1_MOVE_SL_TO_ENTRY", True):
-                    trade['sl_price'] = trade['entry_price'] # Dời SL về entry
-                # (Logic chốt 50% bị bỏ qua trong backtest này để đơn giản hóa,
-                #  nó chỉ mô phỏng việc dời SL)
+                    trade['sl_price'] = trade['entry_price']
 
             if (not trade_closed and trade_management_config.get("ENABLE_PROTECT_PROFIT") and
                 not trade.get("pp_triggered") and not trade.get("tp1_hit") and
@@ -189,16 +179,16 @@ def run_backtest():
                 (trade['peak_pnl_r'] - pnl_r) >= trade_management_config.get("PP_DROP_R_TRIGGER", 0.4)):
                 trade['pp_triggered'] = True
                 if trade_management_config.get("PP_MOVE_SL_TO_ENTRY", True):
-                    trade['sl_price'] = trade['entry_price'] # Dời SL về entry
+                    trade['sl_price'] = trade['entry_price']
 
-            # 5. Thoát lệnh theo SCORE (Hybrid ATR - Điểm 4)
+            # 5. Check Thoát lệnh theo SCORE (Score-Based Exit)
             if not trade_closed and config_dict.get('ENABLE_SCORE_BASED_EXIT', False):
                 current_score = current_long_score if is_long else current_short_score
                 exit_threshold = config_dict.get('EXIT_SCORE_THRESHOLD', 40.0)
                 
                 if current_score < exit_threshold:
                     trade_closed = True
-                    close_price = current_candle_main['open'] # Thoát ngay lập tức
+                    close_price = current_candle_main['open'] # Thoát ngay
                     close_reason = f"Score Exit ({current_score:.1f} < {exit_threshold})"
 
             # --- Xử lý Đóng Lệnh ---
@@ -215,7 +205,7 @@ def run_backtest():
                 active_trades.remove(trade)
                 cooldown_until_index = i + config_dict.get('COOLDOWN_CANDLES', 0)
 
-        # --- B. TÌM TÍN HIỆU MỚI (Logic 3 Cấp) ---
+        # --- B. TÌM TÍN HIỆU MỚI (Logic V8.0) ---
         can_open_trade = (i >= cooldown_until_index) and (len(active_trades) < config.MAX_ACTIVE_TRADES)
         
         if can_open_trade:
@@ -230,7 +220,7 @@ def run_backtest():
                 _, _, score_details_log = get_final_signal(df_main_with_current, df_trend_with_current, config_dict)
                 print_score_details(current_candle_main.name, score_details_log)
 
-            # --- Logic Vào Lệnh 3 Cấp (Điểm 9) ---
+            # --- Logic Vào Lệnh 3 Cấp (Giữ nguyên) ---
             entry_levels = config_dict.get('ENTRY_SCORE_LEVELS', [90.0, 120.0, 150.0])
             signal = 0
             score_level = 0
@@ -247,9 +237,8 @@ def run_backtest():
                 elif final_score >= entry_levels[1]: score_level = 2
                 else: score_level = 1
                 
-                entry_price = current_candle_main['open'] # Vào lệnh ở nến tiếp theo
+                entry_price = current_candle_main['open'] 
                 
-                # Gọi Risk Manager v6.0 (Bước 3) với đúng level
                 trade_details = calculate_trade_details(
                     historical_df_main, entry_price, signal, balance, config_dict, score_level
                 )
@@ -276,7 +265,7 @@ def run_backtest():
                         active_trades.append(new_trade)
                         print(f"[{current_candle_main.name}] >>> LỆNH {new_trade['type']} [CẤP {score_level}] ĐƯỢC THỰC THI (Điểm {final_score:.1f}) <<<")
 
-    # 4. Đóng tất cả các lệnh còn lại vào cuối kỳ
+    # 4. Đóng tất cả các lệnh còn lại (Giữ nguyên)
     if active_trades:
         last_price = df_main.iloc[-1]['close']
         for trade in active_trades:
@@ -290,7 +279,7 @@ def run_backtest():
             trade_history.append(trade)
 
     # 5. In Báo Cáo Kết Quả Nâng Cao (Giữ nguyên)
-    print("\n--- KẾT QUẢ BACKTEST (v6.0 - MTF & Hybrid ATR) ---")
+    print("\n--- KẾT QUẢ BACKTEST (v8.0 - Cộng hưởng & Tinh chỉnh) ---")
     print(f"Data Chính: {DATA_FILE_PATH_MAIN} ({config.TIMEFRAME})")
     print(f"Data Xu Hướng: {DATA_FILE_PATH_TREND} ({config.TREND_TIMEFRAME})")
     print("--------------------------------------------------")

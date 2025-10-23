@@ -1,19 +1,18 @@
-# Tên file: signals/rsi.py (Nâng cấp V6.0 - FINAL)
-# Mục đích: Tính RSI và chấm điểm dựa trên thang đo chi tiết VÀ phát hiện phân kỳ.
+# Tên file: signals/rsi.py (Bản Final V7.0)
+# Mục đích: Tính RSI và chấm điểm bằng logic NỘI SUY (Interpolation)
+#          để lấp đầy "khoảng mù 30-70".
+#          Đã LOẠI BỎ 'trend_bias' và dùng logic CỘNG DỒN.
 
 import pandas as pd
 import numpy as np
 from typing import Optional, Dict, Any, Tuple
 try:
-    # Scipy là thư viện tiêu chuẩn vàng để tìm đỉnh/đáy (peaks/troughs)
-    # Nó giúp logic phát hiện phân kỳ trở nên cực kỳ chính xác và mạnh mẽ.
     from scipy.signal import find_peaks
 except ImportError:
     print("VUI LÒNG CÀI ĐẶT THƯ VIỆN SCIPY: pip install scipy")
-    # Nếu không có scipy, chúng ta không thể chạy logic phân kỳ
     find_peaks = None
 
-# --- HÀM TÍNH TOÁN RSI GỐC ---
+# --- HÀM TÍNH TOÁN RSI GỐC (Giữ nguyên từ file cũ) ---
 def calculate_rsi(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     """
     Tính toán chỉ báo Relative Strength Index (RSI).
@@ -26,140 +25,137 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     
     rs = gain / loss
-    rs = rs.replace([np.inf, -np.inf], 100).fillna(100)
+    rs = rs.replace([np.inf, -np.inf], 100).fillna(100) # Sửa lỗi chia cho 0
 
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# --- HÀM HỖ TRỢ TÌM PHÂN KỲ ---
+# --- HÀM HỖ TRỢ TÌM PHÂN KỲ (Giữ nguyên từ file cũ) ---
 def _find_divergence(price_data: pd.Series, indicator_data: pd.Series, lookback: int) -> Tuple[bool, bool]:
     """
     Hàm nội bộ để tìm phân kỳ tăng và giảm trong 'lookback' nến gần nhất.
+    (Hàm này giữ nguyên từ file gốc v6.0 của bạn)
     """
     if find_peaks is None:
-        return False, False # Không thể tìm phân kỳ nếu thiếu thư viện scipy
+        return False, False 
 
     bullish_divergence = False
     bearish_divergence = False
     
-    # Chỉ xem xét 'lookback' nến cuối cùng
     price = price_data.iloc[-lookback:]
     indicator = indicator_data.iloc[-lookback:]
 
+    # (Logic tìm đỉnh/đáy giữ nguyên... vì nó đã chuẩn)
     # 1. Tìm Phân kỳ Tăng (Bullish Divergence) - So sánh các đáy
     try:
-        # Tìm 2 đáy gần nhất của Giá (dùng -price để tìm đáy)
         price_troughs, _ = find_peaks(-price, distance=5, prominence=0.1)
-        
-        # Tìm 2 đáy gần nhất của RSI (dùng -indicator để tìm đáy)
         indicator_troughs, _ = find_peaks(-indicator, distance=5, prominence=0.1)
-
         if len(price_troughs) >= 2 and len(indicator_troughs) >= 2:
-            # Lấy 2 chỉ số (index) của 2 đáy giá cuối cùng
-            p_low_1_idx = price.index[price_troughs[-2]]
-            p_low_2_idx = price.index[price_troughs[-1]]
-            
-            # Lấy 2 chỉ số của 2 đáy RSI cuối cùng
-            i_low_1_idx = indicator.index[indicator_troughs[-2]]
-            i_low_2_idx = indicator.index[indicator_troughs[-1]]
-
-            # Đảm bảo chúng ta đang so sánh cùng một cặp đáy
+            p_low_1_idx, p_low_2_idx = price.index[price_troughs[-2]], price.index[price_troughs[-1]]
+            i_low_1_idx, i_low_2_idx = indicator.index[indicator_troughs[-2]], indicator.index[indicator_troughs[-1]]
             if p_low_1_idx == i_low_1_idx and p_low_2_idx == i_low_2_idx:
-                # Giá tạo đáy sau thấp hơn đáy trước (Lower Low)
                 if price[p_low_2_idx] < price[p_low_1_idx]:
-                    # RSI tạo đáy sau cao hơn đáy trước (Higher Low)
                     if indicator[i_low_2_idx] > indicator[i_low_1_idx]:
                         bullish_divergence = True
-    except Exception:
-        pass # Bỏ qua nếu không tìm thấy đỉnh/đáy
+    except Exception: pass
 
     # 2. Tìm Phân kỳ Giảm (Bearish Divergence) - So sánh các đỉnh
     try:
-        # Tìm 2 đỉnh gần nhất của Giá
         price_peaks, _ = find_peaks(price, distance=5, prominence=0.1)
-        
-        # Tìm 2 đỉnh gần nhất của RSI
         indicator_peaks, _ = find_peaks(indicator, distance=5, prominence=0.1)
-
         if len(price_peaks) >= 2 and len(indicator_peaks) >= 2:
-            # Lấy 2 chỉ số (index) của 2 đỉnh giá cuối cùng
-            p_high_1_idx = price.index[price_peaks[-2]]
-            p_high_2_idx = price.index[price_peaks[-1]]
-            
-            # Lấy 2 chỉ số của 2 đỉnh RSI cuối cùng
-            i_high_1_idx = indicator.index[indicator_peaks[-2]]
-            i_high_2_idx = indicator.index[indicator_peaks[-1]]
-
-            # Đảm bảo chúng ta đang so sánh cùng một cặp đỉnh
+            p_high_1_idx, p_high_2_idx = price.index[price_peaks[-2]], price.index[price_peaks[-1]]
+            i_high_1_idx, i_high_2_idx = indicator.index[indicator_peaks[-2]], indicator.index[indicator_peaks[-1]]
             if p_high_1_idx == i_high_1_idx and p_high_2_idx == i_high_2_idx:
-                # Giá tạo đỉnh sau cao hơn đỉnh trước (Higher High)
                 if price[p_high_2_idx] > price[p_high_1_idx]:
-                    # RSI tạo đỉnh sau thấp hơn đỉnh trước (Lower High)
                     if indicator[i_high_2_idx] < indicator[i_high_1_idx]:
                         bearish_divergence = True
-    except Exception:
-        pass # Bỏ qua nếu không tìm thấy đỉnh/đáy
+    except Exception: pass
 
     return bullish_divergence, bearish_divergence
 
-# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V6.0) ---
-def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0) -> Tuple[float, float]:
+# --- HÀM HỖ TRỢ NỘI SUY (LOGIC MỚI v7.0) ---
+def _calculate_interpolation(current_val: float, neutral_val: float, full_score_val: float, max_score: float) -> float:
     """
-    Tính điểm thô cho LONG và SHORT dựa trên thang điểm chi tiết của RSI.
-    'trend_bias' (1 cho Long, -1 cho Short, 0 cho Neutral) được truyền vào
-    để xử lý logic "vượt ngưỡng 50 thuận xu hướng".
+    Hàm nội suy tuyến tính để chấm điểm "linh hoạt".
+    Ví dụ: current=40, neutral=50, full_score=30, max=25
+    -> distance = 10, full_distance = 20
+    -> score_factor = 0.5 -> return 12.5
+    """
+    try:
+        # Tính khoảng cách
+        distance = abs(current_val - neutral_val)
+        full_distance = abs(full_score_val - neutral_val)
+        
+        if full_distance == 0:
+            return 0.0 # Tránh lỗi chia cho 0
+
+        # Tính hệ số điểm (từ 0.0 đến 1.0+)
+        score_factor = distance / full_distance
+        
+        # Áp điểm và trả về (đảm bảo không vượt max_score)
+        return min(max_score * score_factor, max_score)
+    except:
+        return 0.0
+
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V7.0) ---
+def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Tính điểm thô cho LONG và SHORT dựa trên logic NỘI SUY (Interpolation)
+    và CỘNG DỒN với điểm Phân kỳ (Divergence).
+    
+    ĐÃ LOẠI BỎ 'trend_bias'.
     """
     long_score, short_score = 0.0, 0.0
     
     try:
-        # ĐỌC CONFIG V6.0
+        # ĐỌC CONFIG V7.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['RSI']
         if not cfg.get('enabled', False):
             return 0.0, 0.0
 
         params = cfg['params']
+        # Đọc các mức điểm MỚI cho logic v7.0
         levels = cfg['score_levels']
         
+        # Các mốc neo cho nội suy
+        neutral_level = levels.get('neutral_level', 50.0)
+        full_score_long = levels.get('full_score_level_long', 30.0)
+        full_score_short = levels.get('full_score_level_short', 70.0)
+        # Điểm tối đa cho riêng phần nội suy
+        momentum_score = levels.get('max_momentum_score', 20) 
+        
+        # Điểm riêng cho phân kỳ
+        divergence_score = levels.get('divergence_score', 30)
+
+        # Tính RSI
         rsi_series = calculate_rsi(df, period=params['period'])
         
         if rsi_series is None or rsi_series.empty or len(rsi_series) < 2:
             return 0.0, 0.0
 
         last_rsi = rsi_series.iloc[-1]
-        prev_rsi = rsi_series.iloc[-2]
         
-        # --- Logic 1: Vùng quá bán (cho Long) ---
-        if last_rsi < 20:
-            long_score = max(long_score, levels['deep_zone'])
-        elif last_rsi < 25:
-            long_score = max(long_score, levels['oversold_overbought'])
-        elif last_rsi < 30:
-            long_score = max(long_score, levels['entry_zone'])
-            
-        # --- Logic 2: Vùng quá mua (cho Short) ---
-        if last_rsi > 80:
-            short_score = max(short_score, levels['deep_zone'])
-        elif last_rsi > 75:
-            short_score = max(short_score, levels['oversold_overbought'])
-        elif last_rsi > 70:
-            short_score = max(short_score, levels['entry_zone'])
-            
-        # --- Logic 3: Tín hiệu Momentum Vùng Trung tâm (CẦN trend_bias) ---
-        if trend_bias == 1: # Xu hướng H1 là TĂNG
-            if prev_rsi <= 50 and last_rsi > 50:
-                long_score = max(long_score, levels['cross_midline'])
-            if last_rsi > 50: # Bao gồm cả trường hợp vừa vượt và trường hợp duy trì
-                 long_score = max(long_score, levels['above_below_midline'])
+        # --- Logic 1: Tính điểm Momentum (Nội suy) ---
+        # (Logic này thay thế 5 logic cũ 'deep_zone', 'oversold', 'entry_zone', 'cross_midline', 'above_midline')
         
-        elif trend_bias == -1: # Xu hướng H1 là GIẢM
-            if prev_rsi >= 50 and last_rsi < 50:
-                short_score = max(short_score, levels['cross_midline'])
-            if last_rsi < 50: # Bao gồm cả trường hợp vừa vượt và trường hợp duy trì
-                 short_score = max(short_score, levels['above_below_midline'])
-
-        # --- Logic 4: Phân kỳ (Divergence) - ĐÃ BAO GỒM ---
-        if find_peaks is not None:
-            # Chúng ta sẽ tìm phân kỳ trong 50 nến gần nhất
+        momentum_long_score, momentum_short_score = 0.0, 0.0
+        
+        if last_rsi < neutral_level:
+            # RSI < 50, thị trường yếu (tín hiệu Long tiềm năng)
+            momentum_long_score = _calculate_interpolation(
+                last_rsi, neutral_level, full_score_long, momentum_score
+            )
+        elif last_rsi > neutral_level:
+            # RSI > 50, thị trường mạnh (tín hiệu Short tiềm năng)
+            momentum_short_score = _calculate_interpolation(
+                last_rsi, neutral_level, full_score_short, momentum_score
+            )
+            
+        # --- Logic 2: Tính điểm Phân kỳ (Divergence) ---
+        div_long_score, div_short_score = 0.0, 0.0
+        
+        if find_peaks is not None and divergence_score > 0:
             lookback_period = 50 
             is_bullish_div, is_bearish_div = _find_divergence(
                 price_data=df['close'], 
@@ -168,15 +164,19 @@ def get_rsi_score(df: pd.DataFrame, config: Dict[str, Any], trend_bias: int = 0)
             )
             
             if is_bullish_div:
-                long_score = max(long_score, levels['divergence'])
+                div_long_score = divergence_score
             
             if is_bearish_div:
-                short_score = max(short_score, levels['divergence'])
+                div_short_score = divergence_score
+
+        # --- Logic 3: Cộng dồn điểm (Additive Logic) ---
+        long_score = momentum_long_score + div_long_score
+        short_score = momentum_short_score + div_short_score
 
     except Exception as e:
-        # print(f"Lỗi khi tính điểm RSI: {e}")
+        # print(f"Lỗi khi tính điểm RSI (v7.0): {e}")
         pass
 
-    # Áp dụng trần điểm
-    max_score = cfg.get('max_score', 30)
-    return min(long_score, max_score), min(short_score, max_score)
+    # Áp dụng trần điểm TỔNG (từ config)
+    max_score_cap = cfg.get('MAX_SCORE', 30)
+    return min(long_score, max_score_cap), min(short_score, max_score_cap)

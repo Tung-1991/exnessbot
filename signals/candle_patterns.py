@@ -1,157 +1,129 @@
-# Tên file: signals/candle_patterns.py (Nâng cấp V6.0 - FINAL)
-# Mục đích: Phân tích các cây nến M15 cuối cùng để tìm các mô hình nến
-#          và trả về điểm số dựa trên 2 cấp độ (mạnh/trung bình) từ config.
+# Tên file: signals/candle_patterns.py (Bản Final V7.0)
+# Mục đích: Phân tích "trừu tượng" MỌI cây nến dựa trên 2 yếu tố:
+#          1. Momentum (Thân nến) và 2. Rejection (Râu nến).
+#          Sử dụng NỘI SUY và CỘNG DỒN, loại bỏ logic mẫu nến máy móc.
 
 import pandas as pd
 from typing import Dict, Any, Tuple
 
-# --- CÁC HÀM HỖ TRỢ ĐỊNH NGHĨA NẾN (HELPER FUNCTIONS) ---
-
-def _is_bullish_engulfing(prev: pd.Series, last: pd.Series) -> bool:
-    """Kiểm tra mô hình Bullish Engulfing (Nhấn chìm Tăng) tiêu chuẩn."""
-    # Nến trước là nến Giảm, nến sau là nến Tăng
-    if (prev['close'] < prev['open']) and (last['close'] > last['open']):
-        # Nến sau "nhấn chìm" hoàn toàn thân nến trước
-        if last['close'] > prev['open'] and last['open'] < prev['close']:
-            return True
-    return False
-
-def _is_bearish_engulfing(prev: pd.Series, last: pd.Series) -> bool:
-    """Kiểm tra mô hình Bearish Engulfing (Nhấn chìm Giảm) tiêu chuẩn."""
-    # Nến trước là nến Tăng, nến sau là nến Giảm
-    if (prev['close'] > prev['open']) and (last['close'] < last['open']):
-        # Nến sau "nhấn chìm" hoàn toàn thân nến trước
-        if last['close'] < prev['open'] and last['open'] > prev['close']:
-            return True
-    return False
-
+# --- HÀM HỖ TRỢ TÍNH TỶ LỆ NẾN (Giữ nguyên từ file cũ v6.0) ---
 def _get_candle_ratios(candle: pd.Series) -> Tuple[float, float, float, float]:
     """
-    Tính toán các tỷ lệ của một cây nến để xác định Pin Bar / Marubozu.
+    Tính toán các tỷ lệ của một cây nến.
     Trả về (tỷ lệ thân, tỷ lệ râu trên, tỷ lệ râu dưới, tổng râu) so với tổng chiều dài nến.
+    (Hàm này giữ nguyên từ file gốc v6.0 của bạn)
     """
     body_size = abs(candle['close'] - candle['open'])
     candle_range = candle['high'] - candle['low']
     
     if candle_range == 0:
-        return 0, 0, 0, 0 # Tránh lỗi chia cho 0 (ví dụ nến Doji 4 giá)
+        return 0, 0, 0, 0 # Tránh lỗi chia cho 0
 
     upper_wick = candle['high'] - max(candle['open'], candle['close'])
     lower_wick = min(candle['open'], candle['close']) - candle['low']
-    wick_size = upper_wick + lower_wick
 
     body_ratio = body_size / candle_range
     upper_wick_ratio = upper_wick / candle_range
     lower_wick_ratio = lower_wick / candle_range
-    wick_ratio = wick_size / candle_range
+    wick_ratio = (upper_wick + lower_wick) / candle_range
     
     return body_ratio, upper_wick_ratio, lower_wick_ratio, wick_ratio
 
-def _is_marubozu(candle: pd.Series, body_ratio: float, wick_ratio: float) -> int:
+# --- HÀM HỖ TRỢ NỘI SUY (LOGIC MỚI v7.0) ---
+# (Hàm này được sao chép từ rsi.py (v7.0) để file này hoạt động độc lập)
+def _calculate_interpolation(current_val: float, neutral_val: float, full_score_val: float, max_score: float) -> float:
     """
-    Kiểm tra nến Marubozu (nến cường lực).
-    Tiêu chí: Thân nến chiếm > 90% toàn bộ nến.
-    Trả về 1 cho Bullish, -1 cho Bearish, 0 cho không có.
+    Hàm nội suy tuyến tính để chấm điểm "linh hoạt".
     """
-    if body_ratio >= 0.90 and wick_ratio <= 0.10:
-        if candle['close'] > candle['open']:
-            return 1 # Bullish Marubozu
-        else:
-            return -1 # Bearish Marubozu
-    return 0
+    try:
+        distance = abs(current_val - neutral_val)
+        full_distance = abs(full_score_val - neutral_val)
+        
+        if full_distance == 0:
+            return 0.0 # Tránh lỗi chia cho 0
+        
+        # Chỉ tính điểm nếu giá trị vượt qua mốc trung tính
+        if (current_val > neutral_val and full_score_val > neutral_val) or \
+           (current_val < neutral_val and full_score_val < neutral_val):
+            
+            score_factor = distance / full_distance
+            return min(max_score * score_factor, max_score)
+        
+        return 0.0
+    except:
+        return 0.0
 
-def _is_hammer(candle: pd.Series, body_ratio: float, upper_wick_ratio: float, lower_wick_ratio: float) -> bool:
-    """
-    Kiểm tra nến Hammer (Bullish Pin Bar).
-    Tiêu chí: Râu dưới dài, râu trên ngắn, thân nhỏ ở trên.
-    """
-    # Râu dưới > 2 lần thân, Râu trên rất nhỏ
-    return (lower_wick_ratio >= 0.50 and # Râu dưới chiếm ít nhất 50%
-            body_ratio <= 0.33 and       # Thân nến chiếm <= 1/3
-            upper_wick_ratio <= 0.20)    # Râu trên ngắn
-
-def _is_shooting_star(candle: pd.Series, body_ratio: float, upper_wick_ratio: float, lower_wick_ratio: float) -> bool:
-    """
-    Kiểm tra nến Shooting Star (Bearish Pin Bar).
-    Tiêu chí: Râu trên dài, râu dưới ngắn, thân nhỏ ở dưới.
-    """
-    # Râu trên > 2 lần thân, Râu dưới rất nhỏ
-    return (upper_wick_ratio >= 0.50 and # Râu trên chiếm ít nhất 50%
-            body_ratio <= 0.33 and       # Thân nến chiếm <= 1/3
-            lower_wick_ratio <= 0.20)    # Râu dưới ngắn
-
-# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V6.0) ---
-
+# --- HÀM TÍNH ĐIỂM SỐ CHÍNH (LOGIC MỚI V7.0 - "TRỪU TƯỢNG") ---
 def get_candle_pattern_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
-    Phân tích cây nến M15 cuối cùng để tìm các mô hình nến đảo chiều mạnh mẽ
-    và trả về điểm số tương ứng.
+    Phân tích cây nến M15 cuối cùng bằng logic "trừu tượng" (v7.0).
+    Tính điểm CỘNG DỒN từ (Momentum + Rejection).
     """
     long_score, short_score = 0.0, 0.0
     
     try:
-        # ĐỌC CONFIG V6.0
+        # ĐỌC CONFIG V7.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['CANDLE_PATTERNS']
-        if not cfg.get('enabled', False) or len(df) < 2:
+        if not cfg.get('enabled', False) or len(df) < 1:
             return 0.0, 0.0
             
-        strong_score = cfg['score_levels']['strong_signal']
-        medium_score = cfg['score_levels']['medium_signal']
+        # Đọc các mức điểm MỚI cho logic v7.0
+        levels = cfg['score_levels']
+        
+        # Cấu hình cho Logic 1: Momentum (Thân nến)
+        momentum_max_score = levels.get('momentum_max_score', 15)
+        momentum_neutral_ratio = levels.get('momentum_neutral_ratio', 0.1) # Thân nến 10% (Doji) = 0đ
+        momentum_full_ratio = levels.get('momentum_full_ratio', 0.9) # Thân nến 90% (Marubozu) = max điểm
 
-        # Lấy dữ liệu 2 cây nến cuối cùng
-        prev_candle = df.iloc[-2]
+        # Cấu hình cho Logic 2: Rejection (Râu nến)
+        rejection_max_score = levels.get('rejection_max_score', 10)
+        rejection_neutral_ratio = levels.get('rejection_neutral_ratio', 0.1) # Râu nến 10% = 0đ
+        rejection_full_ratio = levels.get('rejection_full_ratio', 0.7) # Râu nến 70% (Pin bar) = max điểm
+
+        # Lấy cây nến cuối cùng
         last_candle = df.iloc[-1]
 
         # Lấy các tỷ lệ của nến cuối cùng
-        body_r, up_wick_r, low_wick_r, wick_r = _get_candle_ratios(last_candle)
+        body_r, up_wick_r, low_wick_r, _ = _get_candle_ratios(last_candle)
         
-        # --- Logic 1: Marubozu (Tín hiệu mạnh nhất) ---
-        marubozu_signal = _is_marubozu(last_candle, body_r, wick_r)
-        if marubozu_signal == 1:
-            long_score = max(long_score, strong_score)
-        elif marubozu_signal == -1:
-            short_score = max(short_score, strong_score)
+        # --- Logic 1: Phân tích Momentum (Thân nến) ---
+        momentum_score = _calculate_interpolation(
+            body_r, 
+            momentum_neutral_ratio, 
+            momentum_full_ratio, 
+            momentum_max_score
+        )
+        
+        if momentum_score > 0:
+            if last_candle['close'] > last_candle['open']:
+                long_score += momentum_score # <-- Dùng CỘNG DỒN
+            elif last_candle['close'] < last_candle['open']:
+                short_score += momentum_score # <-- Dùng CỘNG DỒN
 
-        # --- Logic 2: Engulfing (Ưu tiên tiếp theo) ---
-        if long_score == 0 and short_score == 0:
-            if _is_bullish_engulfing(prev_candle, last_candle):
-                last_body = abs(last_candle['close'] - last_candle['open'])
-                prev_body = abs(prev_candle['close'] - prev_candle['open'])
-                # Nếu nến tăng nhấn chìm mạnh (lớn hơn 1.5 lần nến trước)
-                if last_body > (prev_body * 1.5):
-                    long_score = max(long_score, strong_score)
-                else:
-                    long_score = max(long_score, medium_score)
-
-            elif _is_bearish_engulfing(prev_candle, last_candle):
-                last_body = abs(last_candle['close'] - last_candle['open'])
-                prev_body = abs(prev_candle['close'] - prev_candle['open'])
-                # Nếu nến giảm nhấn chìm mạnh
-                if last_body > (prev_body * 1.5):
-                    short_score = max(short_score, strong_score)
-                else:
-                    short_score = max(short_score, medium_score)
-
-        # --- Logic 3: Hammer / Shooting Star (Ưu tiên cuối) ---
-        if long_score == 0 and short_score == 0:
-            if _is_hammer(last_candle, body_r, up_wick_r, low_wick_r):
-                # Nếu râu dưới cực dài (ví dụ: > 65%), coi là tín hiệu mạnh
-                if low_wick_r >= 0.65:
-                    long_score = max(long_score, strong_score)
-                else:
-                    long_score = max(long_score, medium_score)
-
-            elif _is_shooting_star(last_candle, body_r, up_wick_r, low_wick_r):
-                 # Nếu râu trên cực dài (ví dụ: > 65%), coi là tín hiệu mạnh
-                if up_wick_r >= 0.65:
-                    short_score = max(short_score, strong_score)
-                else:
-                    short_score = max(short_score, medium_score)
+        # --- Logic 2: Phân tích Rejection (Râu nến) ---
+        
+        # 2a. Râu dưới (Tín hiệu Long)
+        rejection_long_score = _calculate_interpolation(
+            low_wick_r, 
+            rejection_neutral_ratio, 
+            rejection_full_ratio, 
+            rejection_max_score
+        )
+        long_score += rejection_long_score # <-- Dùng CỘNG DỒN
+        
+        # 2b. Râu trên (Tín hiệu Short)
+        rejection_short_score = _calculate_interpolation(
+            up_wick_r, 
+            rejection_neutral_ratio, 
+            rejection_full_ratio, 
+            rejection_max_score
+        )
+        short_score += rejection_short_score # <-- Dùng CỘNG DỒN
 
     except Exception as e:
-        # print(f"Lỗi khi tính điểm mô hình nến: {e}")
+        # print(f"Lỗi khi tính điểm mô hình nến (v7.0): {e}")
         pass
 
-    # Áp dụng trần điểm
-    max_score = cfg.get('max_score', 20)
-    return min(long_score, max_score), min(short_score, max_score)
+    # Áp dụng trần điểm TỔNG (Weighting)
+    max_score_cap = cfg.get('MAX_SCORE', 20)
+    return min(long_score, max_score_cap), min(short_score, max_score_cap)

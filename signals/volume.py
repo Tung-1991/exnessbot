@@ -1,29 +1,33 @@
-# Tên file: signals/volume.py (Nâng cấp V6.0 - FINAL)
-# Mục đích: Tính toán và chấm điểm cho Volume,
-#          dùng làm tín hiệu xác nhận cho Breakout hoặc Mô hình Nến.
+# Tên file: signals/volume.py (Bản Final V7.0)
+# Mục đích: Tính điểm Volume (xác nhận) bằng logic BẬC THANG
+#          và gán điểm ĐÚNG HƯỚNG nến (Long/Short).
 
 import pandas as pd
 from typing import Dict, Any, Tuple
 
 def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
     """
-    Tính điểm cho Volume.
-    Chỉ cộng điểm nếu volume của cây nến cuối cùng đủ lớn (vượt qua MA * multiplier).
-    
-    Lưu ý: Logic này giả định rằng cây nến cuối cùng (df.iloc[-1]) 
-    CHÍNH LÀ cây nến tín hiệu (ví dụ: nến Breakout, nến Engulfing).
+    Tính điểm cho Volume (Logic Bậc thang v7.0).
+    - Volume cao trên NẾN TĂNG -> + Điểm Long
+    - Volume cao trên NẾN GIẢM -> + Điểm Short
     """
-    # Mặc định là 0. Volume chỉ cộng điểm xác nhận, không bao giờ tự tạo tín hiệu.
     long_score, short_score = 0.0, 0.0
     
     try:
-        # ĐỌC CONFIG V6.0
+        # ĐỌC CONFIG V7.0
         cfg = config['ENTRY_SIGNALS_CONFIG']['VOLUME']
         if not cfg.get('enabled', False) or 'volume' not in df.columns:
             return 0.0, 0.0
 
         params = cfg['params']
+        levels = cfg['score_levels']
         
+        # Đọc các ngưỡng và điểm số cho logic bậc thang
+        spike_multiplier = levels.get('spike_volume_multiplier', 2.5)
+        spike_score = levels.get('spike_score', 10) # Điểm cao nhất
+        high_multiplier = levels.get('high_volume_multiplier', 1.5)
+        high_score = levels.get('high_score', 5) # Điểm trung bình
+
         # 1. Tính toán Volume Trung bình (Volume MA)
         volume_ma = df['volume'].rolling(window=params['ma_period']).mean()
         
@@ -34,21 +38,27 @@ def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, f
         last_volume = df['volume'].iloc[-1]
         avg_volume = volume_ma.iloc[-1]
         
-        # 3. So sánh với ngưỡng
-        threshold_volume = avg_volume * params['multiplier']
-        
-        if last_volume > threshold_volume:
-            # Nếu volume lớn, nó xác nhận cho BẤT KỲ tín hiệu nào đang hình thành
-            # (cả Long và Short). 
-            # signal_generator sẽ quyết định điểm này được cộng vào đâu.
-            # Để đơn giản, chúng ta trả về điểm cho cả hai.
-            score = cfg['max_score'] # Lấy điểm từ max_score
-            long_score = score
-            short_score = score
+        # 3. Logic Bậc thang (v7.0)
+        score = 0.0
+        if last_volume > (avg_volume * spike_multiplier):
+            score = spike_score
+        elif last_volume > (avg_volume * high_multiplier):
+            score = high_score
+            
+        # 4. Gán điểm ĐÚNG HƯỚNG NẾN (Sửa lỗi logic v6.0)
+        if score > 0:
+            last_candle = df.iloc[-1]
+            if last_candle['close'] > last_candle['open']:
+                # Nến TĂNG (Bullish candle)
+                long_score = score
+            elif last_candle['close'] < last_candle['open']:
+                # Nến GIẢM (Bearish candle)
+                short_score = score
 
     except Exception as e:
-        # print(f"Lỗi khi tính điểm Volume: {e}")
+        # print(f"Lỗi khi tính điểm Volume (v7.0): {e}")
         pass
 
-    # Không cần áp trần
-    return long_score, short_score
+    # Áp dụng trần điểm TỔNG (Weighting)
+    max_score_cap = cfg.get('MAX_SCORE', 10) # Lấy MAX_SCORE (ví dụ 10)
+    return min(long_score, max_score_cap), min(short_score, max_score_cap)
