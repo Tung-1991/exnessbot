@@ -83,7 +83,7 @@ def _get_sleep_time_to_next_candle(timeframe_str: str) -> int:
 # ==============================================================================
 # TASK 1: LUỒNG TÍN HIỆU & TSL (CHẬM - ĐỒNG BỘ VỚI NẾN)
 # ==============================================================================
-def signal_task(tm: TradeManager, connector: ExnessConnector):
+def signal_task(tm: TradeManager, connector: ExnessConnector, config_dict: dict):
     """
     Luồng này chịu trách nhiệm cho mọi tính toán nặng:
     1. Tải dữ liệu
@@ -95,7 +95,7 @@ def signal_task(tm: TradeManager, connector: ExnessConnector):
     while True:
         try:
             # 1. Đồng bộ với nến (Ngủ cho đến khi nến đóng)
-            entry_tf = config.entry_timeframe
+            entry_tf = config_dict["entry_timeframe"]
             sleep_sec = _get_sleep_time_to_next_candle(entry_tf)
             logger.info(f"[Luồng 1] Đã đồng bộ. Ngủ {sleep_sec}s chờ nến {entry_tf} đóng.")
             time.sleep(sleep_sec)
@@ -103,8 +103,8 @@ def signal_task(tm: TradeManager, connector: ExnessConnector):
             logger.info(f"[Luồng 1] Thức dậy. Đang tải dữ liệu nến sạch...")
             
             # 2. Lấy dữ liệu
-            data_h1 = connector.get_historical_data(config.SYMBOL, config.trend_timeframe.lower(), config.NUM_H1_BARS)
-            data_m15 = connector.get_historical_data(config.SYMBOL, config.entry_timeframe.lower(), config.NUM_M15_BARS)
+            data_h1 = connector.get_historical_data(config_dict["SYMBOL"], config_dict["trend_timeframe"].lower(), config_dict["NUM_H1_BARS"])
+            data_m15 = connector.get_historical_data(config_dict["SYMBOL"], config_dict["entry_timeframe"].lower(), config_dict["NUM_M15_BARS"])
 
             if data_h1 is None or data_m15 is None or data_h1.empty or data_m15.empty:
                 logger.warning("[Luồng 1] Không có dữ liệu, bỏ qua vòng lặp này.")
@@ -115,7 +115,6 @@ def signal_task(tm: TradeManager, connector: ExnessConnector):
             tm.check_and_open_new_trade(data_h1, data_m15)
             
             # B. Cập nhật TSL (Dời SL) cho các lệnh CŨ
-            # (Dời ở đây là chuẩn nhất vì Swing Point vừa được hình thành xong)
             tm.update_all_trades(data_h1, data_m15)
             
         except Exception as e:
@@ -125,14 +124,15 @@ def signal_task(tm: TradeManager, connector: ExnessConnector):
 # ==============================================================================
 # TASK 2: LUỒNG ĐỐI CHIẾU (NHANH - REALTIME)
 # ==============================================================================
-def reconcile_task(tm: TradeManager, connector: ExnessConnector):
+def reconcile_task(tm: TradeManager, connector: ExnessConnector, config_dict: dict):
     """
     (ĐÃ SỬA TÊN HÀM)
     Luồng này chạy rất nhanh (ví dụ 5s/lần).
     Nhiệm vụ duy nhất: Đối chiếu (Reconcile) xem lệnh trên Exness còn sống hay chết.
     Không tải dữ liệu, không tính toán TSL.
     """
-    logger.info(f"[Luồng 2 - Reconcile] Bắt đầu... Chạy mỗi {config.LOOP_SLEEP_SECONDS} giây.")
+    sleep_interval = config_dict["LOOP_SLEEP_SECONDS"]
+    logger.info(f"[Luồng 2 - Reconcile] Bắt đầu... Chạy mỗi {sleep_interval} giây.")
     while True:
         try:
             start_time = time.time()
@@ -142,14 +142,14 @@ def reconcile_task(tm: TradeManager, connector: ExnessConnector):
 
             # Ngủ đúng thời gian quy định (trừ đi thời gian thực thi)
             elapsed = time.time() - start_time
-            sleep_time = max(0, config.LOOP_SLEEP_SECONDS - elapsed)
+            sleep_time = max(0, sleep_interval - elapsed)
             
             if sleep_time > 0:
                 time.sleep(sleep_time)
             
         except Exception as e:
             logger.error(f"[Luồng 2 - Reconcile] Lỗi: {e}", exc_info=False)
-            time.sleep(config.LOOP_SLEEP_SECONDS)
+            time.sleep(sleep_interval)
 
 # ==============================================================================
 # HÀM CHẠY CHÍNH
@@ -161,8 +161,14 @@ def run_live_bot():
     logger.info("--- KHỞI ĐỘNG [CHẾ ĐỘ LIVE] - KIẾN TRÚC 2 LUỒNG TỐI ƯU ---")
 
     try:
-        # Khởi tạo TradeManager
-        trade_manager = TradeManager(config=config, mode="live")
+        # === [SỬA LỖI] Chuyển module config sang dictionary ===
+        config_dict = {key: getattr(config, key) 
+                       for key in dir(config) 
+                       if not key.startswith('__')}
+        # === [HẾT SỬA LỖI] ===
+        
+        # Khởi tạo TradeManager với config_dict
+        trade_manager = TradeManager(config=config_dict, mode="live")
         
         # Tạo 1 kết nối duy nhất cho cả 2 luồng
         data_connector = ExnessConnector()
@@ -176,10 +182,10 @@ def run_live_bot():
 
     # Khởi chạy 2 Luồng
     # Luồng 1: Signal + TSL (Chậm, nặng)
-    thread1 = threading.Thread(target=signal_task, args=(trade_manager, data_connector), daemon=True)
+    thread1 = threading.Thread(target=signal_task, args=(trade_manager, data_connector, config_dict), daemon=True)
     
-    # Luồng 2: Reconcile (Nhanh, nhẹ) - (ĐÃ SỬA TÊN BIẾN target)
-    thread2 = threading.Thread(target=reconcile_task, args=(trade_manager, data_connector), daemon=True)
+    # Luồng 2: Reconcile (Nhanh, nhẹ)
+    thread2 = threading.Thread(target=reconcile_task, args=(trade_manager, data_connector, config_dict), daemon=True)
 
     thread1.start()
     thread2.start()

@@ -3,15 +3,15 @@
 
 # === 1. HỆ THỐNG ===
 LOOP_SLEEP_SECONDS = 5      # (Giây) Thời gian nghỉ của luồng TSL
-NUM_H1_BARS = 70            # Số nến H1 (Trend) cần tải
-NUM_M15_BARS = 70           # Số nến M15 (Entry) cần tải
+NUM_H1_BARS = 70            # Số nến 1H (Trend) cần tải
+NUM_M15_BARS = 70           # Số nến 15M (Entry) cần tải
 
 # === 2. GIAO DỊCH CHUNG ===
 SYMBOL = "ETHUSD"           # Cặp tiền giao dịch
 CONTRACT_SIZE = 1           # Kích thước hợp đồng (ví dụ: 1 ETH/lot)
 max_trade = 1               # Số lệnh tối đa cùng lúc
-trend_timeframe = "H1"      # Khung thời gian xét Trend
-entry_timeframe = "M15"     # Khung thời gian xét Entry
+trend_timeframe = "1H"      # Khung thời gian xét Trend
+entry_timeframe = "15M"     # Khung thời gian xét Entry
 ALLOW_LONG_TRADES = True    # Cho phép lệnh Long
 ALLOW_SHORT_TRADES = True   # Cho phép lệnh Short
 
@@ -21,14 +21,14 @@ RISK_MANAGEMENT_MODE = "FIXED_LOT"  # Chế độ QLV: "FIXED_LOT", "RISK_PERCEN
 fixed_lot = 1.0                     # Lô cố định (cho "FIXED_LOT" hoặc "DYNAMIC")
 RISK_PERCENT_PER_TRADE = 1.0        # % rủi ro/lệnh (cho "RISK_PERCENT" hoặc "DYNAMIC")
 
-# === 4. LỌC TREND (H1) ===
-USE_TREND_FILTER = True         # Bật/Tắt bộ lọc Trend H1
+# === 4. LỌC TREND (1H) ===
+USE_TREND_FILTER = True         # Bật/Tắt bộ lọc Trend 1H
 USE_SUPERTREND_FILTER = True    # Bật/Tắt lọc Supertrend
 USE_EMA_TREND_FILTER = True     # Bật/Tắt lọc EMA 50
 USE_ADX_FILTER = False          # Bật/Tắt lọc ADX (cho GĐ 1)
 ADX_MIN_LEVEL = 20              # Ngưỡng ADX (phân biệt trend/sideways)
 
-# === 5. LỌC ENTRY (M15) Nến + volume  ===
+# === 5. LỌC ENTRY (15M) Nến + volume  ===
 ENTRY_LOGIC_MODE = "BREAKOUT"   # Chế độ Entry: "BREAKOUT", "PULLBACK", "DYNAMIC"
 PULLBACK_CANDLE_PATTERN = "ENGULFING" # Mẫu nến đảo chiều Pullback 
 USE_CANDLE_FILTER = True        # Bật/Tắt lọc Nến (thân nến mạnh)
@@ -40,7 +40,7 @@ volume_sd_multiplier = 1.0      # Hệ số nhân StdDev (cho Volume)
 
 # === 6. QUẢN LÝ LỆNH (SL/TSL/Exit) ===
 COOLDOWN_MINUTES = 1        # (Phút) Thời gian chờ giữa các lệnh
-USE_EMERGENCY_EXIT = False       # Bật/Tắt Thoát khẩn cấp (theo H1)
+USE_EMERGENCY_EXIT = False       # Bật/Tắt Thoát khẩn cấp (theo 1H)
 
 # --- SL Ban đầu ---
 sl_atr_multiplier = 0.3       # Hệ số SL ban đầu (dựa trên ATR) + swingpoint
@@ -64,8 +64,8 @@ ST_MULTIPLIER = 3.0             # Hệ số nhân (của Supertrend)
 DI_PERIOD = 14                  # Chu kỳ DI (của ADX)
 ADX_PERIOD = 14                 # Chu kỳ làm mượt (của ADX)
 
-TREND_EMA_PERIOD = 50           # Chu kỳ EMA (Trend H1)
-ENTRY_EMA_PERIOD = 21           # Chu kỳ EMA (Entry M15)
+TREND_EMA_PERIOD = 50           # Chu kỳ EMA (Trend 1H)
+ENTRY_EMA_PERIOD = 21           # Chu kỳ EMA (Entry 15M)
 
 # === 8. HẠ TẦNG & DỮ LIỆU ===
 DATA_DIR = "data"               # Thư mục chứa file CSV, logs, state
