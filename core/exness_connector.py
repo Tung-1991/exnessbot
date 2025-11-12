@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 # exness_connector.py
-# Version: 2.0.0 - The Guardian
+# Version: 2.0.1 - The Guardian (Patched)
 # Date: 2025-08-27
 """
-CHANGELOG (v2.0.0):
-- REFACTOR (calculate_lot_size): Tái cấu trúc hoàn toàn hàm tính toán lot size để có độ tin cậy và an toàn tối đa.
-    - FEATURE (Proactive SL Adjustment): Tích hợp cơ chế tự động điều chỉnh Stop Loss nếu nó được đặt quá gần giá,
-      tránh các lỗi từ chối lệnh không cần thiết (ý tưởng của người dùng).
-    - ENHANCEMENT (Calculation Focus): Loại bỏ phương pháp tính toán thủ công (fallback) có rủi ro sai lệch với các cặp tiền
-      phức tạp. Giờ đây, hàm sẽ tập trung 100% vào việc lấy kết quả chính xác từ hàm `mt5.order_calc_profit`.
-    - FEATURE (Emergency Fallback): Nếu việc tính toán mức lỗ thất bại hoàn toàn, bot sẽ sử dụng lot size tối thiểu
-      và ghi một log ở mức CRITICAL để người dùng được cảnh báo ngay lập tức về việc quy tắc rủi ro đã bị bỏ qua.
-- FEATURE (Helper Utilities): Thêm các hàm hỗ trợ `validate_order_before_placement` và `get_market_status` để tăng cường
-  khả năng kiểm tra và gỡ lỗi (ý tưởng của người dùng).
+CHANGELOG (v2.0.1):
+- FIX (Zero Division Risk): Thêm kiểm tra an toàn trong calculate_lot_size để tránh lỗi chia cho số cực nhỏ,
+  ngăn chặn việc tính ra lot size khổng lồ không mong muốn.
 """
 from __future__ import annotations
 
@@ -37,7 +30,7 @@ class ExnessConnector:
             '30m': mt5.TIMEFRAME_M30, '1h': mt5.TIMEFRAME_H1, '4h': mt5.TIMEFRAME_H4,
             '1d': mt5.TIMEFRAME_D1,
         }
-        logger.info("Exness Connector v2.0.0 (The Guardian) khởi tạo. Sẵn sàng kết nối...")
+        logger.info("Exness Connector v2.0.1 (Patched) khởi tạo. Sẵn sàng kết nối...")
 
     def connect(self) -> bool:
         if self._is_connected:
@@ -132,8 +125,7 @@ class ExnessConnector:
         volume = volume_to_close if volume_to_close is not None and volume_to_close > 0 else position.volume
         request = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": position.symbol, "volume": volume,
-            "type": order_type, "position": position.ticket, "price": price, "comment": "",
-            #"type": order_type, "position": position.ticket, "price": price, "comment": comment,
+            "type": order_type, "position": position.ticket, "price": price, "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_FOK,
         }
         result = mt5.order_send(request)
@@ -162,32 +154,34 @@ class ExnessConnector:
         profit = mt5.order_calc_profit(mt5_order_type, symbol, volume, entry_price, current_price)
         return profit
 
-    def calculate_lot_size(self, symbol: str, risk_amount_usd: float, sl_price: float, order_type: int) -> Optional[float]:
+    # --- (THAY ĐỔI) Sửa Lỗi 2 (Phần 1) ---
+    def calculate_lot_size(self, symbol: str, risk_amount_usd: float, sl_price: float, order_type: int) -> Optional[Tuple[float, float]]:
         """
         Tính toán lot size chính xác với xử lý lỗi toàn diện và cơ chế dự phòng.
+        (THAY ĐỔI): Trả về (lot_size, adjusted_sl_price)
         """
         if not self._is_connected:
             logger.error(f"MT5 chưa kết nối - không thể tính lot size cho {symbol}")
-            return None
+            return None, 0.0 # (THAY ĐỔI)
         
         try:
             # BƯỚC 1: Lấy thông tin symbol và validate
             symbol_info = mt5.symbol_info(symbol)
             if not symbol_info:
                 logger.error(f"Không lấy được thông tin symbol {symbol}")
-                return None
+                return None, 0.0 # (THAY ĐỔI)
 
             tick = mt5.symbol_info_tick(symbol)
             if not tick:
                 logger.error(f"Không lấy được tick data của {symbol}")
-                return None
+                return None, 0.0 # (THAY ĐỔI)
             
             # BƯỚC 2: Xác định giá vào lệnh và các tham số cơ bản
             entry_price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
             min_vol, max_vol, vol_step = symbol_info.volume_min, symbol_info.volume_max, symbol_info.volume_step
 
             # BƯỚC 3: Validate và tự động điều chỉnh khoảng cách SL
-            # Yêu cầu SL phải cách giá ít nhất 2 lần spread để đảm bảo lệnh hợp lệ
+            # (GIÁ TRỊ sl_price CÓ THỂ BỊ THAY ĐỔI TẠI ĐÂY)
             min_distance = symbol_info.spread * symbol_info.point * 2.0
             if abs(entry_price - sl_price) < min_distance:
                 logger.warning(f"SL quá gần cho {symbol}. Khoảng cách hiện tại: {abs(entry_price - sl_price):.5f} < Yêu cầu: {min_distance:.5f}")
@@ -196,14 +190,20 @@ class ExnessConnector:
                 sl_price = entry_price - buffer if order_type == mt5.ORDER_TYPE_BUY else entry_price + buffer
                 logger.info(f"Tự động điều chỉnh SL cho {symbol} về mức an toàn: {sl_price:.5f}")
 
-            # BƯỚC 4: Tính mức lỗ, ưu tiên hàm của MT5
+            # BƯỚC 4: Tính mức lỗ, ưu tiên hàm của MT5 (dùng sl_price đã điều chỉnh)
             loss_per_lot = mt5.order_calc_profit(order_type, symbol, 1.0, entry_price, sl_price)
 
             # BƯỚC 5: Validate kết quả tính mức lỗ và fallback khẩn cấp
             if loss_per_lot is None or loss_per_lot >= 0:
                 logger.critical(f"TÍNH TOÁN LỖ THẤT BẠI cho {symbol} ngay cả sau khi điều chỉnh SL. Giá trị loss_per_lot: {loss_per_lot}")
                 logger.critical(f"Bỏ qua quy tắc rủi ro! Sử dụng lot size tối thiểu ({min_vol}) làm giải pháp khẩn cấp.")
-                return min_vol
+                return min_vol, sl_price # (THAY ĐỔI)
+
+            # --- [FIX START] KIỂM TRA CHIA CHO SỐ 0 HOẶC QUÁ NHỎ ---
+            if abs(loss_per_lot) < 0.00001:
+                logger.critical(f"LỖI TOÁN HỌC: Mức lỗ ({loss_per_lot}) quá nhỏ (gần bằng 0). Trả về Min Lot để an toàn.")
+                return min_vol, sl_price # (THAY ĐỔI)
+            # --- [FIX END] ---
 
             # BƯỚC 6: Tính toán và làm tròn lot size
             lot_size = risk_amount_usd / abs(loss_per_lot)
@@ -215,13 +215,13 @@ class ExnessConnector:
             # BƯỚC 7: Áp dụng giới hạn min/max của sàn
             if lot_size < min_vol:
                 logger.warning(f"Lot size tính toán ({lot_size:.2f}) < mức tối thiểu ({min_vol}). Sử dụng mức tối thiểu.")
-                return min_vol
+                return min_vol, sl_price # (THAY ĐỔI)
             if lot_size > max_vol:
                 logger.warning(f"Lot size tính toán ({lot_size:.2f}) > mức tối đa ({max_vol}). Sử dụng mức tối đa.")
-                return max_vol
+                return max_vol, sl_price # (THAY ĐỔI)
             
             logger.debug(f"Tính toán lot size thành công cho {symbol}: {lot_size:.2f} (Rủi ro: ${risk_amount_usd:.2f})")
-            return lot_size
+            return lot_size, sl_price # (THAY ĐỔI)
 
         except Exception as e:
             logger.error(f"Lỗi ngoại lệ nghiêm trọng trong calculate_lot_size cho {symbol}: {e}", exc_info=True)
@@ -229,10 +229,11 @@ class ExnessConnector:
                 symbol_info = mt5.symbol_info(symbol)
                 if symbol_info:
                     logger.critical(f"FALLBACK NGOẠI LỆ: Sử dụng lot size tối thiểu cho {symbol} do lỗi không xác định.")
-                    return symbol_info.volume_min
+                    return symbol_info.volume_min, 0.0 # (THAY ĐỔI)
             except:
                 pass
-            return None
+            return None, 0.0 # (THAY ĐỔI)
+    # --- (HẾT THAY ĐỔI) ---
 
     def validate_order_before_placement(self, symbol: str, order_type: int, lot_size: float, 
                                           sl_price: float, tp_price: float) -> Tuple[bool, str]:

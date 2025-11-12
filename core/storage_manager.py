@@ -19,7 +19,8 @@ def load_state() -> Dict[str, Any]:
     default_state = {
         "active_trades": [],   # Danh sách các lệnh đang được bot quản lý
         "trade_history": [],   # Lịch sử các lệnh đã đóng
-        "account_stats": {}    # Các thông số thống kê về tài khoản
+        "account_stats": {},   # Các thông số thống kê về tài khoản
+        "last_trade_close_time": None # (MỚI) Thêm để theo dõi Cooldown
     }
     
     if not os.path.exists(STATE_FILE_PATH):

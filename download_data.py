@@ -1,20 +1,22 @@
-# download_data.py (Nâng cấp MTF - Tự động tải 2 khung thời gian)
+# -*- coding: utf-8 -*-
+# Tên file: download_data.py
 
 import os
+import re
 import pandas as pd
 from datetime import datetime
-import re
-# Import config chính của bot
-import config as bot_config
+import logging
+
+# Import các file "Giữ nguyên"
 from core.exness_connector import ExnessConnector
+# Import file config
+import config
 
-# --- CẤU HÌNH CHUNG ---
-SYMBOL = bot_config.SYMBOL
-MONTHS_TO_DOWNLOAD = 6 # Bạn có thể chỉnh số tháng ở đây
-OUTPUT_FOLDER = "data"
+logger = logging.getLogger("ExnessBot")
 
-def parse_timeframe_to_minutes(tf_str: str) -> int:
-    # (Giữ nguyên hàm này)
+# (Hàm này giữ nguyên như file cũ của bạn, rất tốt)
+def _parse_timeframe_to_minutes(tf_str: str) -> int:
+    """Helper: Chuyển đổi 'H1', 'M15' sang số phút."""
     tf_str = tf_str.lower()
     match = re.match(r"(\d+)([mhd])", tf_str)
     if not match:
@@ -25,70 +27,93 @@ def parse_timeframe_to_minutes(tf_str: str) -> int:
     elif unit == 'd': return value * 24 * 60
     return 0
 
-def download_single_timeframe(connector: ExnessConnector, timeframe: str):
-    """Tải dữ liệu cho một khung thời gian cụ thể."""
-    print(f"\n--- Bắt đầu tải dữ liệu cho {timeframe} ---")
+def _download_single_timeframe(
+    connector: ExnessConnector, 
+    symbol: str,
+    timeframe: str, 
+    output_path: str,
+    months_to_download: int
+) -> bool:
+    """Hàm helper: Tải 1 khung thời gian cụ thể."""
     try:
-        minutes_per_candle = parse_timeframe_to_minutes(timeframe)
+        logger.info(f"--- Bắt đầu tải cho {timeframe} ---")
+        minutes_per_candle = _parse_timeframe_to_minutes(timeframe)
         if minutes_per_candle == 0: return False
+        
         candles_per_day = (24 * 60) / minutes_per_candle
-        num_candles_to_fetch = int(candles_per_day * 30.5 * MONTHS_TO_DOWNLOAD)
+        # Ước tính số nến (dùng 30.5 ngày/tháng)
+        num_candles_to_fetch = int(candles_per_day * 30.5 * months_to_download)
+
+        logger.info(f"Số nến {timeframe} sẽ tải (ước tính): {num_candles_to_fetch}")
+        
+        df = connector.get_historical_data(symbol, timeframe.lower(), num_candles_to_fetch)
+        
+        if df is None or df.empty:
+            logger.error(f"LỖI: Không nhận được dữ liệu {timeframe} từ MT5.")
+            return False
+
+        # Lưu file
+        df.to_csv(output_path, index=True, index_label='timestamp')
+        logger.info(f"✅ Đã lưu thành công {len(df)} nến {timeframe} vào: {output_path}")
+        return True
+
     except ValueError as e:
-        print(f"LỖI CẤU HÌNH Timeframe: {e}")
+        logger.error(f"LỖI CẤU HÌNH Timeframe: {e}")
         return False
-
-    print(f"Khung thời gian: {timeframe}")
-    print(f"Số nến sẽ tải (ước tính): {num_candles_to_fetch}")
-
-    print(f"Đang tải dữ liệu cho {SYMBOL}...")
-    df = connector.get_historical_data(SYMBOL, timeframe, num_candles_to_fetch)
-
-    if df is None or df.empty:
-        print(f"LỖI: Không nhận được dữ liệu {timeframe} từ MT5.")
+    except Exception as e:
+        logger.error(f"Lỗi ngoại lệ khi tải {timeframe}: {e}")
         return False
-
-    print(f"✅ Đã tải thành công {len(df)} nến {timeframe}.")
-
-    # Lưu file
-    # Tạo tên file động dựa trên timeframe
-    output_filename = f"{SYMBOL}_{timeframe}_{MONTHS_TO_DOWNLOAD}M.csv"
-    output_path = os.path.join(OUTPUT_FOLDER, output_filename)
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-    df.to_csv(output_path)
-    print(f"Dữ liệu {timeframe} đã được lưu tại: {output_path}")
-    return True
 
 def download_all_data():
-    """Tải dữ liệu cho cả TIMEFRAME và TREND_TIMEFRAME từ config."""
-    print("--- Bắt đầu quá trình tải dữ liệu MTF từ Exness (MT5) ---")
-    print(f"Cặp tiền: {SYMBOL}")
-    print(f"Số tháng: {MONTHS_TO_DOWNLOAD}")
+    """
+    Hàm chính (Code lại): Tải CẢ HAI khung thời gian (Trend và Entry).
+    """
+    logger.info("--- Bắt đầu quá trình tải dữ liệu (H1 & M15) ---")
+    
+    # Đọc từ config
+    SYMBOL = config.SYMBOL
+    TREND_TIMEFRAME = config.trend_timeframe
+    ENTRY_TIMEFRAME = config.entry_timeframe
+    MONTHS_TO_DOWNLOAD = config.MONTHS_TO_DOWNLOAD
+    DATA_DIR = config.DATA_DIR
+    
+    os.makedirs(DATA_DIR, exist_ok=True) # Tạo thư mục /data nếu chưa có
+    
+    # Xác định đường dẫn file
+    path_h1 = os.path.join(DATA_DIR, f"{SYMBOL}_{TREND_TIMEFRAME}.csv")
+    path_m15 = os.path.join(DATA_DIR, f"{SYMBOL}_{ENTRY_TIMEFRAME}.csv")
 
     connector = ExnessConnector()
-    print("\nBước 1: Đang kết nối tới Terminal MetaTrader 5...")
+    logger.info("Bước 1: Đang kết nối tới Terminal MetaTrader 5...")
     if not connector.connect():
-        print("LỖI: Không thể kết nối tới MT5.")
+        logger.critical("LỖI: Không thể kết nối tới MT5. Hủy tải dữ liệu.")
         return
 
-    print("✅ Kết nối thành công!")
+    logger.info("✅ Kết nối thành công!")
 
-    # Bước 2: Tải data cho TIMEFRAME chính
-    success1 = download_single_timeframe(connector, bot_config.TIMEFRAME)
+    # Bước 2: Tải H1
+    success_h1 = _download_single_timeframe(
+        connector, SYMBOL, TREND_TIMEFRAME, path_h1, MONTHS_TO_DOWNLOAD
+    )
+    
+    # Bước 3: Tải M15
+    success_m15 = _download_single_timeframe(
+        connector, SYMBOL, ENTRY_TIMEFRAME, path_m15, MONTHS_TO_DOWNLOAD
+    )
 
-    # Bước 3: Tải data cho TREND_TIMEFRAME
-    success2 = False
-    if bot_config.TIMEFRAME != bot_config.TREND_TIMEFRAME: # Chỉ tải nếu khác nhau
-        success2 = download_single_timeframe(connector, bot_config.TREND_TIMEFRAME)
+    connector.shutdown()
+    
+    if success_h1 and success_m15:
+        logger.info("--- HOÀN TẤT: Đã tải thành công CẢ HAI file dữ liệu. ---")
     else:
-        success2 = True # Coi như thành công nếu timeframe giống nhau
-
-    connector.shutdown() # Ngắt kết nối
-
-    if success1 and success2:
-        print("\n--- HOÀN TẤT TẢI DỮ LIỆU MTF ---")
-    else:
-        print("\n--- TẢI DỮ LIỆU MTF THẤT BẠI ---")
-
+        logger.error("--- LỖI: Không tải được đầy đủ 2 file. Vui lòng kiểm tra log. ---")
 
 if __name__ == "__main__":
+    # (Setup logger cơ bản nếu chạy file này trực tiếp)
+    try:
+        from core.logger_setup import setup_logging
+        setup_logging()
+    except ImportError:
+        logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] - %(message)s")
+        
     download_all_data()

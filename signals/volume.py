@@ -1,64 +1,68 @@
-# Tên file: signals/volume.py (Bản Final V7.0)
-# Mục đích: Tính điểm Volume (xác nhận) bằng logic BẬC THANG
-#          và gán điểm ĐÚNG HƯỚNG nến (Long/Short).
+# -*- coding: utf-8 -*-
+# Tên file: signals/volume.py
 
 import pandas as pd
-from typing import Dict, Any, Tuple
+import logging
+from typing import Dict, Any
 
-def get_volume_score(df: pd.DataFrame, config: Dict[str, Any]) -> Tuple[float, float]:
+logger = logging.getLogger("ExnessBot")
+
+def get_volume_confirmation(
+    df_m15: pd.DataFrame,
+    config: Dict[str, Any]
+) -> bool:
     """
-    Tính điểm cho Volume (Logic Bậc thang v7.0).
-    - Volume cao trên NẾN TĂNG -> + Điểm Long
-    - Volume cao trên NẾN GIẢM -> + Điểm Short
+    Kiểm tra xác nhận Volume (Logic StdDev - finalplan.txt).
+    Kiểm tra xem Volume của nến breakout (nến cuối cùng)
+    có vượt trội so với trung bình (cộng độ lệch chuẩn) hay không.
+
+    Args:
+        df_m15 (pd.DataFrame): DataFrame dữ liệu M15.
+        config (Dict[str, Any]): Đối tượng config.
+
+    Trả về:
+        bool: True nếu volume mạnh, False nếu không.
     """
-    long_score, short_score = 0.0, 0.0
+    
+    volume_ma_period = config["volume_ma_period"]
+    volume_sd_multiplier = config["volume_sd_multiplier"]
     
     try:
-        # ĐỌC CONFIG V7.0
-        cfg = config['ENTRY_SIGNALS_CONFIG']['VOLUME']
-        if not cfg.get('enabled', False) or 'volume' not in df.columns:
-            return 0.0, 0.0
+        # Cần ít nhất (chu kỳ + 1 nến breakout) để tính toán
+        if len(df_m15) < volume_ma_period + 1:
+            # logger.debug("Không đủ dữ liệu M15 để tính Volume VMA/StdDev.")
+            return False
 
-        params = cfg['params']
-        levels = cfg['score_levels']
-        
-        # Đọc các ngưỡng và điểm số cho logic bậc thang
-        spike_multiplier = levels.get('spike_volume_multiplier', 2.5)
-        spike_score = levels.get('spike_score', 10) # Điểm cao nhất
-        high_multiplier = levels.get('high_volume_multiplier', 1.5)
-        high_score = levels.get('high_score', 5) # Điểm trung bình
+        # Lấy volume của nến breakout (nến cuối cùng)
+        breakout_volume = df_m15['volume'].iloc[-1]
 
-        # 1. Tính toán Volume Trung bình (Volume MA)
-        volume_ma = df['volume'].rolling(window=params['ma_period']).mean()
-        
-        if volume_ma.empty or pd.isna(volume_ma.iloc[-1]):
-            return 0.0, 0.0
+        # Lấy (volume_ma_period) nến TRƯỚC nến breakout để làm cơ sở
+        # Ví dụ: nếu period=20, sẽ lấy 20 nến (từ -21 đến -2)
+        previous_volumes = df_m15['volume'].iloc[-(volume_ma_period + 1) : -1]
 
-        # 2. Lấy các giá trị cuối cùng
-        last_volume = df['volume'].iloc[-1]
-        avg_volume = volume_ma.iloc[-1]
-        
-        # 3. Logic Bậc thang (v7.0)
-        score = 0.0
-        if last_volume > (avg_volume * spike_multiplier):
-            score = spike_score
-        elif last_volume > (avg_volume * high_multiplier):
-            score = high_score
-            
-        # 4. Gán điểm ĐÚNG HƯỚNG NẾN (Sửa lỗi logic v6.0)
-        if score > 0:
-            last_candle = df.iloc[-1]
-            if last_candle['close'] > last_candle['open']:
-                # Nến TĂNG (Bullish candle)
-                long_score = score
-            elif last_candle['close'] < last_candle['open']:
-                # Nến GIẢM (Bearish candle)
-                short_score = score
+        if len(previous_volumes) < volume_ma_period:
+             # (Check an toàn lần nữa)
+            return False
+
+        # Tính toán VMA (Volume Moving Average) và StdDev
+        vma = previous_volumes.mean()
+        std_dev = previous_volumes.std()
+
+        # Xử lý lỗi (ví dụ: data đầu vào bị lỗi, hoặc std_dev=NaN)
+        if pd.isna(vma) or pd.isna(std_dev) or vma == 0:
+            # logger.warning("VMA hoặc StdDev Volume không hợp lệ (NaN/0).")
+            return False
+
+        # --- Logic Cốt lõi (finalplan.txt) ---
+        volume_threshold = vma + (std_dev * volume_sd_multiplier)
+
+        if breakout_volume > volume_threshold:
+            # logger.debug(f"XÁC NHẬN VOLUME: {breakout_volume:.2f} > {volume_threshold:.2f}")
+            return True
 
     except Exception as e:
-        # print(f"Lỗi khi tính điểm Volume (v7.0): {e}")
+        logger.error(f"Lỗi nghiêm trọng khi check Volume (StdDev logic): {e}", exc_info=True)
         pass
 
-    # Áp dụng trần điểm TỔNG (Weighting)
-    max_score_cap = cfg.get('MAX_SCORE', 10) # Lấy MAX_SCORE (ví dụ 10)
-    return min(long_score, max_score_cap), min(short_score, max_score_cap)
+    # Mặc định là False
+    return False

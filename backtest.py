@@ -1,341 +1,188 @@
 # -*- coding: utf-8 -*-
-# backtest.py (v8.0 - Tương thích Logic Cộng hưởng V8.0)
+# Tên file: backtest.py
 
+import os
 import pandas as pd
-import numpy as np
-from typing import Dict, Any, List
 import logging
+from typing import Optional
+from datetime import datetime, timedelta # (MỚI) Thêm thư viện datetime
 
-# --- BƯỚC 1: IMPORT CÁC MODULE v8.0 ---
-import config 
-from signals.signal_generator import get_final_signal
-from core.risk_manager import calculate_trade_details
-from signals.atr import calculate_atr
+# Import các file "Cốt lõi"
+from core.logger_setup import setup_logging
+from core.trade_manager import TradeManager 
 
-# Thiết lập logger
-logger = logging.getLogger("ExnessBot")
-if not logger.hasHandlers():
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+# Import các file "Bộ não"
+from signals.signal_generator import get_signal 
 
-# --- BƯỚC 2: CẤU HÌNH BACKTEST ---
-INITIAL_CAPITAL = 1000.0
+# Import file config
+import config
 
-DATA_FILE_PATH_MAIN = "data/ETHUSD_15m_6M.csv" 
-DATA_FILE_PATH_TREND = "data/ETHUSD_1h_6M.csv"
+logger = logging.getLogger("ExnessBot") 
+# logger = logging.getLogger("ExnessBot") 
 
-CONTRACT_SIZE = 1.0
-CANDLE_FETCH_COUNT = config.CANDLE_FETCH_COUNT
-SHOW_DETAILED_LOG = True # Đặt True để xem log chi tiết V8.0
-
-# Lấy config dictionary v8.0 (quan trọng)
-config_dict = config.__dict__
-
-def print_score_details(timestamp: Any, details: Dict[str, Any]):
+def _load_and_sync_data() -> Optional[pd.DataFrame]:
     """
-    In ra bảng phân tích điểm số chi tiết V8.0 (Đã xóa bỏ trend_bias).
-    Hàm này sắp xếp các chỉ báo theo 2 khung thời gian (M15 và H1).
+    Tải 2 file CSV và đồng bộ H1 vào M15.
+    (SỬA LỖI LOOKAHEAD BIAS)
     """
-    long_scores = details.get("long", {})
-    short_scores = details.get("short", {})
-    
-    long_total = sum(long_scores.values())
-    short_total = sum(short_scores.values())
-
-    # Tách 6 chỉ báo M15 và 2 chỉ báo H1
-    m15_indicators = ['BB', 'RSI', 'MACD', 'Candle', 'ADX', 'Volume']
-    h1_indicators = ['ST_H1', 'EMA_H1']
-
-    print(f"[{timestamp}] --- PHÂN TÍCH TÍN HIỆU V8.0 ---")
-    
-    # --- PHE LONG ---
-    print(f"==> PHE LONG (Tổng: {long_total:.1f})")
-    # In điểm M15
-    long_m15 = " | ".join([f"{k}: {long_scores.get(k, 0.0):.1f}" for k in m15_indicators if long_scores.get(k, 0.0) > 0])
-    print(f"    [M15]: {long_m15 if long_m15 else 'Không có điểm'}")
-    # In điểm H1
-    long_h1 = " | ".join([f"{k}: {long_scores.get(k, 0.0):.1f}" for k in h1_indicators if long_scores.get(k, 0.0) > 0])
-    if long_h1: print(f"    [H1]:  {long_h1}")
-
-    # --- PHE SHORT ---
-    print(f"\n==> PHE SHORT (Tổng: {short_total:.1f})")
-    # In điểm M15
-    short_m15 = " | ".join([f"{k}: {short_scores.get(k, 0.0):.1f}" for k in m15_indicators if short_scores.get(k, 0.0) > 0])
-    print(f"    [M15]: {short_m15 if short_m15 else 'Không có điểm'}")
-    # In điểm H1
-    short_h1 = " | ".join([f"{k}: {short_scores.get(k, 0.0):.1f}" for k in h1_indicators if short_scores.get(k, 0.0) > 0])
-    if short_h1: print(f"    [H1]:  {short_h1}")
-    
-    print("="*60)
-
-def prepare_data():
-    """Tải và đồng bộ hóa hai dataframe MTF."""
     try:
-        df_main = pd.read_csv(DATA_FILE_PATH_MAIN, index_col='timestamp', parse_dates=True)
-        df_trend = pd.read_csv(DATA_FILE_PATH_TREND, index_col='timestamp', parse_dates=True)
+        path_h1 = os.path.join(config.DATA_DIR, f"{config.SYMBOL}_{config.trend_timeframe}.csv")
+        path_m15 = os.path.join(config.DATA_DIR, f"{config.SYMBOL}_{config.entry_timeframe}.csv")
+
+        df_h1 = pd.read_csv(path_h1, index_col='timestamp', parse_dates=True)
+        df_m15 = pd.read_csv(path_m15, index_col='timestamp', parse_dates=True)
         
-        df_main.rename(columns={'tick_volume': 'volume'}, inplace=True, errors='ignore')
-        df_trend.rename(columns={'tick_volume': 'volume'}, inplace=True, errors='ignore')
-    except FileNotFoundError as e:
-        print(f"LỖI: Không tìm thấy file dữ liệu: {e.filename}")
-        return None, None
+        # --- (THAY ĐỔI) SỬA LỖI LOOKAHEAD BIAS ---
+        # 1. Thêm prefix
+        df_h1_prefixed = df_h1.add_prefix('h1_')
+        # 2. Dịch chuyển (shift) dữ liệu H1 về quá khứ 1 nến
+        #    Điều này đảm bảo tại nến M15 (ví dụ 10:15), 
+        #    bot chỉ thấy dữ liệu H1 đã đóng (nến 9:00-10:00),
+        #    chứ không thấy dữ liệu H1 'tương lai' (nến 10:00-11:00).
+        df_h1_shifted = df_h1_prefixed.shift(1)
         
-    df_main = df_main[df_main.index.floor('h').isin(df_trend.index)]
-    
-    if df_main.empty:
-        print("LỖI: Không có dữ liệu sau khi đồng bộ hóa. Kiểm tra lại 2 file data.")
-        return None, None
+        # 3. Concat với dữ liệu H1 đã dịch chuyển (shifted)
+        df_synced = pd.concat([df_m15, df_h1_shifted], axis=1).ffill()
+        # --- (HẾT THAY ĐỔI) ---
         
-    print(f"Đã tải {len(df_main)} nến {config.TIMEFRAME} và {len(df_trend)} nến {config.TREND_TIMEFRAME}.")
-    return df_main, df_trend
+        # 4. Xóa các hàng M15 đầu tiên (không có dữ liệu H1 tương ứng)
+        df_synced = df_synced.dropna(subset=['h1_open'])
+        
+        if df_synced.empty:
+            logger.error("Dữ liệu sau khi đồng bộ bị rỗng.")
+            return None
+            
+        logger.info(f"Đã tải và đồng bộ {len(df_synced)} nến M15 (đã sửa lỗi Lookahead Bias).")
+        return df_synced
+        
+    except FileNotFoundError:
+        logger.critical(f"LỖI: Không tìm thấy file data. Vui lòng chạy 'download_data.py' trước.")
+        return None
+    except Exception as e:
+        logger.critical(f"Lỗi nghiêm trọng khi tải dữ liệu: {e}", exc_info=True)
+        return None
 
 def run_backtest():
-    print("--- Bắt đầu chạy Backtest (v8.0 - Cộng hưởng & Tinh chỉnh) ---")
+    """
+    Hàm chính để chạy vòng lặp Backtest "trên giấy".
+    """
+    logger.info("--- BẮT ĐẦU CHẠY BACKTEST (Chế độ 'trên giấy') ---")
     
-    # 1. Tải và chuẩn bị dữ liệu MTF
-    df_main, df_trend = prepare_data()
-    if df_main is None:
+    # 1. Tải và đồng bộ dữ liệu
+    df_synced = _load_and_sync_data()
+    if df_synced is None:
         return
 
-    # 2. Thiết lập "luật chơi"
-    balance = INITIAL_CAPITAL
-    equity_curve = [INITIAL_CAPITAL]
-    active_trades: List[Dict[str, Any]] = []
-    trade_history: List[Dict[str, Any]] = []
-    cooldown_until_index = 0
-
-    print(f"Bắt đầu giả lập trên {len(df_main)} nến (đã đồng bộ)...")
-
-    # 3. Vòng lặp Giả lập
-    for i in range(CANDLE_FETCH_COUNT, len(df_main)):
-        
-        # --- LẤY DATA SLICE (MTF) ---
-        historical_df_main = df_main.iloc[i - CANDLE_FETCH_COUNT : i]
-        current_candle_main = df_main.iloc[i]
-        
-        current_trend_time = current_candle_main.name.floor('h')
-        trend_index_loc = df_trend.index.get_loc(current_trend_time)
-        historical_df_trend = df_trend.iloc[trend_index_loc - CANDLE_FETCH_COUNT : trend_index_loc]
-
-        if historical_df_trend.empty:
-            continue 
-
-        # --- A. QUẢN LÝ LỆNH MỞ (Logic Thoát lệnh V7.0 - Giữ nguyên) ---
-        trade_management_config = config_dict.get('ACTIVE_TRADE_MANAGEMENT', {})
-        
-        # Lấy score MỚI NHẤT cho logic Thoát lệnh (Score-Based Exit)
-        current_long_score, current_short_score, _ = get_final_signal(
-            historical_df_main, historical_df_trend, config_dict
+    # 2. Khởi tạo các mô-đun
+    
+    # Khởi tạo TradeManager ở chế độ "backtest"
+    # Truyền config vào
+    try:
+        trade_manager = TradeManager(
+            config=config, # Truyền config
+            mode="backtest", 
+            initial_capital=config.BACKTEST_INITIAL_CAPITAL
         )
-        
-        for trade in active_trades[:]:
-            pnl = 0.0
-            is_long = trade['type'] == 'LONG'
-            current_price = current_candle_main['open']
-            
-            price_change = (current_price - trade['entry_price']) if is_long else (trade['entry_price'] - current_price)
-            pnl_usd = price_change * trade['lot_size'] * CONTRACT_SIZE
-            pnl_r = pnl_usd / trade['initial_risk_usd'] if trade['initial_risk_usd'] > 0 else 0.0
-            trade['peak_pnl_r'] = max(trade.get('peak_pnl_r', 0.0), pnl_r)
-
-            trade_closed = False
-            close_price = 0.0
-            close_reason = "Unknown"
-
-            # 1. Check SL/TP (ATR 3 Cấp)
-            if is_long:
-                if current_candle_main['low'] <= trade['sl_price']:
-                    trade_closed = True; close_price = trade['sl_price']; close_reason = "Stop Loss"
-                elif current_candle_main['high'] >= trade['tp_price']:
-                    trade_closed = True; close_price = trade['tp_price']; close_reason = "Take Profit"
-            else: # SHORT
-                if current_candle_main['high'] >= trade['sl_price']:
-                    trade_closed = True; close_price = trade['sl_price']; close_reason = "Stop Loss"
-                elif current_candle_main['low'] <= trade['tp_price']:
-                    trade_closed = True; close_price = trade['tp_price']; close_reason = "Take Profit"
-
-            # 2. Check TSL
-            if not trade_closed and trade_management_config.get("ENABLE_TSL"):
-                atr_series = calculate_atr(historical_df_main, config.INDICATORS_CONFIG['ATR']['PERIOD'])
-                if atr_series is not None and not atr_series.empty:
-                    current_atr = atr_series.iloc[-1] 
-                    trail_distance = current_atr * trade_management_config.get('TSL_ATR_MULTIPLIER', 2.5)
-                    
-                    if is_long:
-                        new_potential_sl = current_price - trail_distance
-                        if new_potential_sl > trade['sl_price']: trade['sl_price'] = new_potential_sl
-                    else:
-                        new_potential_sl = current_price + trail_distance
-                        if new_potential_sl < trade['sl_price']: trade['sl_price'] = new_potential_sl
-
-            # 3 & 4. Check TP1 & PP
-            if not trade_closed and trade_management_config.get("ENABLE_TP1") and not trade.get("tp1_hit") and pnl_r >= trade_management_config.get("TP1_RR_RATIO", 1.0):
-                trade['tp1_hit'] = True
-                if trade_management_config.get("TP1_MOVE_SL_TO_ENTRY", True):
-                    trade['sl_price'] = trade['entry_price']
-
-            if (not trade_closed and trade_management_config.get("ENABLE_PROTECT_PROFIT") and
-                not trade.get("pp_triggered") and not trade.get("tp1_hit") and
-                trade['peak_pnl_r'] >= trade_management_config.get("PP_MIN_PEAK_R_TRIGGER", 1.2) and
-                (trade['peak_pnl_r'] - pnl_r) >= trade_management_config.get("PP_DROP_R_TRIGGER", 0.4)):
-                trade['pp_triggered'] = True
-                if trade_management_config.get("PP_MOVE_SL_TO_ENTRY", True):
-                    trade['sl_price'] = trade['entry_price']
-
-            # 5. Check Thoát lệnh theo SCORE (Score-Based Exit)
-            if not trade_closed and config_dict.get('ENABLE_SCORE_BASED_EXIT', False):
-                current_score = current_long_score if is_long else current_short_score
-                exit_threshold = config_dict.get('EXIT_SCORE_THRESHOLD', 40.0)
-                
-                if current_score < exit_threshold:
-                    trade_closed = True
-                    close_price = current_candle_main['open'] # Thoát ngay
-                    close_reason = f"Score Exit ({current_score:.1f} < {exit_threshold})"
-
-            # --- Xử lý Đóng Lệnh ---
-            if trade_closed:
-                price_change = (close_price - trade['entry_price']) if is_long else (trade['entry_price'] - close_price)
-                pnl = price_change * trade['lot_size'] * CONTRACT_SIZE
-                balance += pnl
-                equity_curve.append(balance)
-                
-                trade['close_time'] = current_candle_main.name
-                trade['pnl'] = pnl
-                trade['close_reason'] = close_reason
-                trade_history.append(trade)
-                active_trades.remove(trade)
-                cooldown_until_index = i + config_dict.get('COOLDOWN_CANDLES', 0)
-
-        # --- B. TÌM TÍN HIỆU MỚI (Logic V8.0) ---
-        can_open_trade = (i >= cooldown_until_index) and (len(active_trades) < config.MAX_ACTIVE_TRADES)
-        
-        if can_open_trade:
-            # (Chúng ta đã tính score ở trên, dùng lại)
-            final_long_score = current_long_score
-            final_short_score = current_short_score
-            
-            if SHOW_DETAILED_LOG and (final_long_score > 0 or final_short_score > 0):
-                # (Tải lại data slice LẦN CUỐI cùng với nến hiện tại để in log cho đúng)
-                df_main_with_current = df_main.iloc[i - CANDLE_FETCH_COUNT : i+1]
-                df_trend_with_current = df_trend.iloc[trend_index_loc - CANDLE_FETCH_COUNT : trend_index_loc+1]
-                _, _, score_details_log = get_final_signal(df_main_with_current, df_trend_with_current, config_dict)
-                print_score_details(current_candle_main.name, score_details_log)
-
-            # --- Logic Vào Lệnh 3 Cấp (Giữ nguyên) ---
-            entry_levels = config_dict.get('ENTRY_SCORE_LEVELS', [90.0, 120.0, 150.0])
-            signal = 0
-            score_level = 0
-            final_score = 0.0
-
-            if config.ENABLE_LONG_TRADES and final_long_score > final_short_score and final_long_score >= entry_levels[0]:
-                signal = 1; final_score = final_long_score
-            elif config.ENABLE_SHORT_TRADES and final_short_score > final_long_score and final_short_score >= entry_levels[0]:
-                signal = -1; final_score = final_short_score
-            
-            if signal != 0:
-                # Xác định Cấp (Level)
-                if final_score >= entry_levels[2]: score_level = 3
-                elif final_score >= entry_levels[1]: score_level = 2
-                else: score_level = 1
-                
-                entry_price = current_candle_main['open'] 
-                
-                trade_details = calculate_trade_details(
-                    historical_df_main, entry_price, signal, balance, config_dict, score_level
-                )
-                
-                if trade_details:
-                    lot_size, sl_price, tp_price = trade_details
-                    initial_risk = abs(entry_price - sl_price) * lot_size * CONTRACT_SIZE
-                    
-                    if lot_size > 0 and balance > initial_risk:
-                        new_trade = {
-                            "entry_time": current_candle_main.name,
-                            "entry_price": entry_price,
-                            "type": "LONG" if signal == 1 else "SHORT",
-                            "lot_size": lot_size,
-                            "sl_price": sl_price,
-                            "tp_price": tp_price,
-                            "initial_risk_usd": initial_risk,
-                            "score": final_score,
-                            "score_level": score_level,
-                            "tp1_hit": False,
-                            "pp_triggered": False,
-                            "peak_pnl_r": 0.0
-                        }
-                        active_trades.append(new_trade)
-                        print(f"[{current_candle_main.name}] >>> LỆNH {new_trade['type']} [CẤP {score_level}] ĐƯỢC THỰC THI (Điểm {final_score:.1f}) <<<")
-
-    # 4. Đóng tất cả các lệnh còn lại (Giữ nguyên)
-    if active_trades:
-        last_price = df_main.iloc[-1]['close']
-        for trade in active_trades:
-            price_change = (last_price - trade['entry_price']) if trade['type'] == 'LONG' else (trade['entry_price'] - last_price)
-            pnl = price_change * trade['lot_size'] * CONTRACT_SIZE
-            balance += pnl
-            equity_curve.append(balance)
-            trade['close_time'] = df_main.index[-1]
-            trade['pnl'] = pnl
-            trade['close_reason'] = "End of Backtest"
-            trade_history.append(trade)
-
-    # 5. In Báo Cáo Kết Quả Nâng Cao (Giữ nguyên)
-    print("\n--- KẾT QUẢ BACKTEST (v8.0 - Cộng hưởng & Tinh chỉnh) ---")
-    print(f"Data Chính: {DATA_FILE_PATH_MAIN} ({config.TIMEFRAME})")
-    print(f"Data Xu Hướng: {DATA_FILE_PATH_TREND} ({config.TREND_TIMEFRAME})")
-    print("--------------------------------------------------")
-    
-    total_pnl = balance - INITIAL_CAPITAL
-    total_return_pct = (total_pnl / INITIAL_CAPITAL) * 100
-    print(f"Vốn ban đầu:      ${INITIAL_CAPITAL:,.2f}")
-    print(f"Số dư cuối kỳ:     ${balance:,.2f}")
-    print(f"Tổng Lợi nhuận/Lỗ: ${total_pnl:,.2f} ({total_return_pct:,.2f}%)")
-
-    if not trade_history:
-        print("\nKhông có lệnh nào được thực hiện.")
+    except Exception as e:
+        logger.critical(f"Lỗi khi khởi tạo TradeManager (Backtest): {e}")
         return
 
-    total_trades = len(trade_history)
-    wins = [t for t in trade_history if t['pnl'] > 0]
-    losses = [t for t in trade_history if t['pnl'] <= 0]
-    win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
+    # 3. Vòng lặp chính (Mô phỏng 24/7)
+    min_data_h1 = config.NUM_H1_BARS
+    min_data_m15 = config.NUM_M15_BARS
     
-    print(f"\nTổng số lệnh:       {total_trades}")
-    print(f"Số lệnh thắng:      {len(wins)}")
-    print(f"Số lệnh thua:       {len(losses)}")
-    print(f"Tỷ lệ thắng:         {win_rate:,.2f}%")
+    logger.info("Bắt đầu lặp qua từng nến M15...")
     
-    total_gross_profit = sum(t['pnl'] for t in wins)
-    total_gross_loss = abs(sum(t['pnl'] for t in losses))
-    profit_factor = total_gross_profit / total_gross_loss if total_gross_loss > 0 else float('inf')
-    avg_win = total_gross_profit / len(wins) if wins else 0
-    avg_loss = total_gross_loss / len(losses) if losses else 0
-    rr_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
+    # Lấy giá trị Cooldown từ config (nếu không có thì mặc định 60)
+    cooldown_minutes = config.COOLDOWN_MINUTES if hasattr(config, "COOLDOWN_MINUTES") else 60
+    cooldown_delta = timedelta(minutes=cooldown_minutes)
     
-    print(f"\nLợi nhuận gộp:      ${total_gross_profit:,.2f}")
-    print(f"Lỗ gộp:             ${total_gross_loss:,.2f}")
-    print(f"Profit Factor:      {profit_factor:,.2f}")
-    print(f"Trung bình Thắng:   ${avg_win:,.2f}")
-    print(f"Trung bình Thua:    ${avg_loss:,.2f}")
-    print(f"Tỷ lệ R:R (TB):      {rr_ratio:,.2f}:1")
-    
-    equity_series = pd.Series(equity_curve)
-    peak = equity_series.expanding().max()
-    drawdown = (equity_series - peak) / peak
-    max_drawdown_pct = abs(drawdown.min() * 100)
-    
-    print(f"\nSụt giảm vốn tối đa: {max_drawdown_pct:,.2f}%")
+    # Lặp từ nến thứ X trở đi
+    for i in range(max(min_data_h1, min_data_m15), len(df_synced)):
+        
+        # 3.1. Lấy dữ liệu lịch sử
+        current_m15_data = df_synced.iloc[i - min_data_m15 : i + 1]
+        
+        h1_subset = df_synced.iloc[: i + 1][['h1_open', 'h1_high', 'h1_low', 'h1_close', 'h1_volume']]
+        h1_unique = h1_subset.drop_duplicates(keep='last')
+        current_h1_data = h1_unique.iloc[-min_data_h1:]
+        current_h1_data.columns = ['open', 'high', 'low', 'close', 'volume']
+        
+        current_time = current_m15_data.index[-1] # Đây là Timestamp
+        current_time_py = current_time.to_pydatetime() # Chuyển sang datetime
 
-    long_trades = [t for t in trade_history if t['type'] == 'LONG']
-    short_trades = [t for t in trade_history if t['type'] == 'SHORT']
-    print(f"\nSố lệnh Long:       {len(long_trades)} (Thắng: {len([t for t in long_trades if t['pnl'] > 0])})")
-    print(f"Số lệnh Short:      {len(short_trades)} (Thắng: {len([t for t in short_trades if t['pnl'] > 0])})")
+        # 3.2. CẬP NHẬT TRƯỚC (Chế độ Backtest)
+        try:
+            # (Hàm này có thể đóng lệnh và kích hoạt Cooldown)
+            trade_manager.update_all_trades(current_h1_data, current_m15_data)
+        except Exception as e:
+            logger.error(f"[{current_time}] Lỗi khi update_all_trades (Backtest): {e}", exc_info=False)
+
+
+        # --- [LOGIC MỚI] KIỂM TRA COOLDOWN CHO BACKTEST ---
+        is_in_cooldown = False
+        if trade_manager.last_trade_close_time_str:
+            try:
+                last_close_time = datetime.fromisoformat(trade_manager.last_trade_close_time_str)
+                
+                # Nếu chưa hết cooldown -> bỏ qua tìm tín hiệu
+                if current_time_py < (last_close_time + cooldown_delta):
+                    is_in_cooldown = True
+                else:
+                    # Hết cooldown, reset
+                    trade_manager.last_trade_close_time_str = None
+                    # (Không cần save state vì đây là backtest)
+            except Exception as e:
+                logger.error(f"Lỗi xử lý Cooldown (Backtest): {e}")
+                trade_manager.last_trade_close_time_str = None # Reset nếu lỗi
+        
+        # Nếu đang cooldown, bỏ qua bước 3.3 và 3.4
+        if is_in_cooldown:
+            continue
+        # --- [HẾT LOGIC MỚI] ---
+        
+
+        # 3.3. TÌM TÍN HIỆU
+        
+        # (Kiểm tra max_trade trước khi tìm tín hiệu để tiết kiệm tài nguyên)
+        if trade_manager._get_open_trade_count() >= trade_manager.max_trade:
+            signal = None
+        else:
+            try:
+                # Truyền config vào
+                signal = get_signal(current_h1_data, current_m15_data, config) # "BUY", "SELL", None
+            except Exception as e:
+                logger.error(f"[{current_time}] Lỗi khi get_signal: {e}", exc_info=False)
+                signal = None
+            
+        # 3.4. HÀNH ĐỘNG (Chế độ Backtest)
+        if signal:
+            try:
+                # (Hàm open_trade đã có check max_trade bên trong 
+                # để xử lý race condition, nhưng check ở 3.3 vẫn tốt hơn)
+                trade_manager.open_trade(signal, current_h1_data, current_m15_data)
+            except Exception as e:
+                logger.error(f"[{current_time}] Lỗi khi open_trade ({signal}) (Backtest): {e}", exc_info=False)
+
+    logger.info("--- HOÀN TẤT VÒNG LẶP BACKTEST ---")
     
-    # Phân tích lý do đóng lệnh
-    print("\n--- Phân tích Lý do Đóng lệnh ---")
-    reasons = pd.Series([t['close_reason'] for t in trade_history]).value_counts()
-    for reason, count in reasons.items():
-        print(f"  {reason:<25}: {count} lệnh")
+    # 4. Xuất kết quả
+    try:
+        results_df = trade_manager.get_backtest_results_df()
+        if results_df.empty:
+            logger.warning("Backtest hoàn tất. Không có lệnh nào được thực hiện.")
+            return
+
+        os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+        output_path = os.path.join(config.OUTPUT_DIR, config.RESULTS_CSV_FILE)
+        
+        results_df.to_csv(output_path, index=False)
+        logger.info(f"Đã lưu kết quả Backtest ( {len(results_df)} lệnh) vào: {output_path}")
+
+    except Exception as e:
+        logger.error(f"Lỗi khi xuất kết quả backtest: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
+    setup_logging()
     run_backtest()

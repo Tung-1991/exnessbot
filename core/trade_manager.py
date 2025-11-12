@@ -1,348 +1,614 @@
 # -*- coding: utf-8 -*-
-# core/trade_manager.py (v6.0 - Final)
-# Nâng cấp Logic Đa Khung, Vào Lệnh 3 Cấp, và Thoát Lệnh Hybrid ATR (Điểm 4).
+# Tên file: core/trade_manager.py
 
-import time
-import re
 import logging
+import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, Any
-import MetaTrader5 as mt5
-import uuid
+from typing import Dict, Any, Optional, List
+import threading
 
-# Import các module cốt lõi v6.0
+# --- Import các file "Cốt lõi" ---
 from core.exness_connector import ExnessConnector
-from core.risk_manager import calculate_trade_details # (File Bước 3)
-from signals.signal_generator import get_final_signal # (File Bước 2)
 from core.storage_manager import load_state, save_state
-from signals.atr import calculate_atr
+from core.risk_manager import RiskManager 
 
-# Lấy logger chính của ứng dụng
+# --- Import các file "Cảm biến" ---
+from signals.atr import calculate_atr
+from signals.swing_point import get_last_swing_points
+from signals.signal_generator import get_signal
+from signals.adx import get_adx_value
+from signals.ema import check_trend_ema
+from signals.supertrend import get_supertrend_direction
+
 logger = logging.getLogger("ExnessBot")
 
-# --- HÀM TIỆN ÍCH (Giữ nguyên) ---
-def parse_timeframe_to_minutes(tf_str: str) -> int:
-    """Hàm chuyển đổi chuỗi timeframe (ví dụ: '5m', '1h') sang số phút."""
-    tf_str = tf_str.lower()
-    match = re.match(r"(\d+)([mhd])", tf_str)
-    if not match: raise ValueError(f"Khung thời gian không hợp lệ: {tf_str}")
-    value, unit = int(match.group(1)), match.group(2)
-    if unit == 'm': return value
-    elif unit == 'h': return value * 60
-    elif unit == 'd': return value * 24 * 60
-    return 0
+# ==============================================================================
+# LỚP HỖ TRỢ (Dùng cho Backtest)
+# ==============================================================================
+class SimTrade:
+    """Lớp lưu trữ thông tin lệnh (Trade "trên giấy") cho Backtest."""
+    def __init__(self, entry_time, entry_price, signal_type, lot_size, 
+                 initial_sl_price, initial_risk_usd):
+        self.entry_time = entry_time
+        self.entry_price = entry_price
+        self.type = signal_type # "BUY" / "SELL"
+        self.lot_size = lot_size
+        
+        self.initial_sl_price = initial_sl_price
+        self.current_sl = initial_sl_price 
+        self.initial_risk_usd = initial_risk_usd
+        self.initial_1R_usd = initial_risk_usd 
+        
+        self.is_BE_hit = False 
+        
+        # Thông tin khi đóng lệnh
+        self.close_time = None
+        self.close_price = None
+        self.close_reason = None
+        self.pnl_usd = 0.0
 
-# ---------------------------------------------
+# ==============================================================================
+# LỚP TRADE MANAGER (CHÍNH)
+# ==============================================================================
 
 class TradeManager:
-    """Lớp điều phối chính v6.0, chứa logic Vào/Thoát lệnh nâng cao."""
     
-    def __init__(self, config_module):
-        self.config = config_module
-        self.connector = ExnessConnector()
-        self.state = {}
-        self.last_candle_time = None
-        self.cooldown_until = datetime.now()
-        # Xóa bỏ cache data phức tạp, sẽ tải data mới mỗi lần phân tích
-        # để đảm bảo score "biến động" chính xác nhất.
-        logger.info("Trade Manager v6.0 (Logic 3 Cấp & Hybrid ATR) đã khởi tạo.")
-
-    def run(self):
-        """Bắt đầu vòng lặp hoạt động chính của bot (Giữ nguyên logic)."""
-        logger.info("Bot đang khởi động...")
-        if not self.connector.connect():
-            logger.critical("CRITICAL: Không thể kết nối tới MT5! Bot sẽ thoát.")
-            return
-            
-        self.state = load_state()
-        logger.info(f"✅ Bot đã tải lại trạng thái. Hiện đang quản lý {len(self.state.get('active_trades', []))} lệnh.")
-        logger.info("✅ Kết nối thành công. Bot bắt đầu hoạt động...")
-        
-        try:
-            while True:
-                now = datetime.now()
-                
-                # 1. Quản lý lệnh đang mở (Chạy mỗi giây)
-                # Đây là nơi logic Thoát Lệnh (Điểm 4) và TSL (Điểm 7) hoạt động
-                self.manage_open_positions()
-
-                # 2. Quét tín hiệu mới (Chỉ chạy 1 lần khi có nến mới)
-                timeframe_minutes = parse_timeframe_to_minutes(self.config['TIMEFRAME'])
-                # Đảm bảo chỉ chạy 1 lần duy nhất khi nến mới bắt đầu
-                is_new_candle_time = (now.minute % timeframe_minutes == 0) and (now.second < self.config['LOOP_SLEEP_SECONDS'])
-                current_candle_timestamp = now.replace(second=0, microsecond=0)
-                
-                if is_new_candle_time and current_candle_timestamp != self.last_candle_time:
-                    self.last_candle_time = current_candle_timestamp
-                    logger.info(f"Nến {self.config['TIMEFRAME']} mới. Bắt đầu quét lệnh mới...")
-                    self.scan_for_new_trades()
-
-                time.sleep(self.config['LOOP_SLEEP_SECONDS'])
-
-        except KeyboardInterrupt:
-            logger.warning("\nPhát hiện Ctrl+C. Bot đang dừng lại một cách an toàn...")
-        except Exception as e:
-            logger.critical(f"Lỗi không xác định trong vòng lặp chính: {e}", exc_info=True)
-        finally:
-            logger.info("Đang đóng kết nối và lưu trạng thái cuối cùng...")
-            save_state(self.state)
-            self.connector.shutdown()
-            logger.info("Bot đã dừng hoàn toàn.")
-
-    def get_current_pnl(self, trade: Dict, current_price: float) -> tuple[float, float]:
-        """Tính PnL hiện tại của lệnh bằng USD và R-multiple (Giữ nguyên)."""
-        if not current_price or trade.get('entry_price', 0) <= 0: return 0.0, 0.0
-        
-        order_type_str = 'LONG' if trade['type'] == 'LONG' else 'SELL'
-        profit_usd = self.connector.calculate_profit(trade['symbol'], order_type_str, trade['lot_size'], trade['entry_price'], current_price) or 0.0
-        
-        # Sửa lỗi chia cho 0 nếu risk = 0
-        initial_risk_usd = trade.get('initial_risk_usd', 0.0)
-        if initial_risk_usd <= 0: return profit_usd, 0.0
-        
-        pnl_r = profit_usd / initial_risk_usd
-        return profit_usd, pnl_r
-
-    def manage_open_positions(self):
+    def __init__(self, config: Dict[str, Any], mode="live", initial_capital=10000.0):
         """
-        Quản lý các lệnh đang mở (Logic Hybrid ATR - Điểm 4 & TSL - Điểm 7).
-        Hàm này chạy liên tục để check TSL, TP1, PP, và Score Exit.
+        Khởi tạo Trade Manager.
         """
-        if not self.state.get('active_trades'): return
-        
-        trade_cfg = self.config.get('ACTIVE_TRADE_MANAGEMENT', {})
-        state_changed = False
-        
-        # Lấy data nến HIỆN TẠI để tính score (cho Điểm 4)
-        # Chúng ta cần data mới nhất mỗi lần check
-        df_main = self.connector.get_historical_data(self.config['SYMBOL'], self.config['TIMEFRAME'], self.config['CANDLE_FETCH_COUNT'])
-        df_trend = self.connector.get_historical_data(self.config['SYMBOL'], self.config['TREND_TIMEFRAME'], self.config['CANDLE_FETCH_COUNT'])
+        self.config = config
+        self.mode = mode
+        logger.info(f"TradeManager đã khởi tạo ở chế độ: [{self.mode.upper()}]")
 
-        # Nếu không lấy được data, không thể check score, chỉ check TSL/TP/PP
-        can_check_score = (df_main is not None and df_trend is not None)
-        current_long_score, current_short_score = 0.0, 0.0
-        
-        if can_check_score:
-            current_long_score, current_short_score, _ = get_final_signal(df_main, df_trend, self.config)
+        self.lock = threading.Lock()
 
-        for trade in self.state.get('active_trades', [])[:]:
-            position = next((p for p in self.connector.get_all_open_positions() if p.ticket == trade['ticket_id']), None)
+        # --- Đọc Config (Chỉ đọc các config liên quan đến TradeManager) ---
+        self.SYMBOL = self.config["SYMBOL"]
+        self.max_trade = self.config["max_trade"]
+        
+        # SL/TSL Config
+        self.atr_period = self.config["atr_period"]
+        self.swing_period = self.config["swing_period"]
+        self.sl_atr_multiplier = self.config["sl_atr_multiplier"]
+        self.tsl_trigger_R = self.config["tsl_trigger_R"]
+        self.isMoveToBE_Enabled = self.config["isMoveToBE_Enabled"]
+        self.be_atr_buffer = self.config["be_atr_buffer"]
+        self.trail_atr_buffer = self.config["trail_atr_buffer"]
+        
+        self.MAGIC_NUMBER = 12345 
+
+        # Cấu hình theo Mode
+        if self.mode == "live":
+            self.connector = ExnessConnector()
+            if not self.connector.connect():
+                logger.critical("LỖI NGHIÊM TRỌNG: Không thể kết nối MT5 ở chế độ LIVE.")
+                raise ConnectionError("Không thể khởi tạo TradeManager ở chế độ LIVE.")
             
-            # 1. Kiểm tra xem lệnh có còn trên server không
-            if position is None:
-                logger.info(f"Lệnh #{trade['ticket_id']} đã đóng (SL/TP server). Đang cập nhật bộ nhớ.")
-                self.state['active_trades'].remove(trade)
-                self.state.setdefault('trade_history', []).append(trade) # Lưu lịch sử
-                state_changed = True
-                continue
-
-            is_long = trade['type'] == 'LONG'
-            tick = self.connector.mt5.symbol_info_tick(trade['symbol'])
-            if not tick: continue
+            # Tải trạng thái (Xử lý mất kết nối)
+            self.state = load_state()
+            self.managed_trades = self.state.get("active_trades", [])
+            self.last_trade_close_time_str = self.state.get("last_trade_close_time", None)
+            logger.info(f"[LIVE] Đang quản lý {len(self.managed_trades)} lệnh (tải từ JSON).")
             
-            current_price = tick.bid if is_long else tick.ask
-            pnl_usd, pnl_r = self.get_current_pnl(trade, current_price)
-            trade['peak_pnl_r'] = max(trade.get('peak_pnl_r', 0.0), pnl_r)
+        else: # "backtest"
+            self.connector = None # Không cần connector cho backtest
+            self.open_trades_sim: List[SimTrade] = []
+            self.closed_trades_sim: List[SimTrade] = []
+            self.sim_capital = initial_capital
+            self.equity_curve = [self.sim_capital]
+            self.last_trade_close_time_str = None
+            logger.info(f"[BACKTEST] Khởi tạo với vốn $ {initial_capital:,.2f}")
 
-            # --- LOGIC THOÁT LỆNH SỐ 1: HYBRID ATR (ĐIỂM 4) ---
-            if self.config.get('ENABLE_SCORE_BASED_EXIT', False) and can_check_score:
-                current_score = current_long_score if is_long else current_short_score
-                exit_threshold = self.config.get('EXIT_SCORE_THRESHOLD', 40.0)
-                
-                if current_score < exit_threshold:
-                    logger.warning(f"[Hybrid ATR] Kích hoạt thoát lệnh! Lệnh #{trade['ticket_id']} ({trade['type']}) có điểm rớt xuống {current_score:.2f} (Ngưỡng: {exit_threshold})")
-                    
-                    close_percent = self.config.get('EXIT_PARTIAL_CLOSE_PERCENT', 100.0)
-                    volume_to_close = round(position.volume * (close_percent / 100.0), 2)
-                    
-                    if self.connector.close_position(position, volume_to_close=volume_to_close, comment="Score Exit"):
-                        if volume_to_close == position.volume:
-                            self.state['active_trades'].remove(trade)
-                            self.state.setdefault('trade_history', []).append(trade)
-                        else:
-                            # Cập nhật lại lot size nếu chỉ đóng 1 phần
-                            trade['lot_size'] = round(position.volume - volume_to_close, 2)
-                            trade['initial_lot_size'] = trade['lot_size'] # Cập nhật để các logic sau (PP, TP1) tính đúng
-                        
-                        state_changed = True
-                    continue # Đã xử lý lệnh này
-
-            # --- LOGIC THOÁT LỆNH SỐ 2, 3, 4 (TP1, PP, TSL - ĐIỂM 7) ---
-            # Các logic này được giữ nguyên từ file gốc của bạn, chúng chạy song song
-            
-            # 2. Logic TP1
-            if trade_cfg.get("ENABLE_TP1") and not trade.get("tp1_hit") and pnl_r >= trade_cfg.get("TP1_RR_RATIO", 1.0):
-                logger.info(f"[TP1] Lệnh #{trade['ticket_id']} đạt ngưỡng {trade_cfg.get('TP1_RR_RATIO', 1.0)}R.")
-                lot_to_close = round(trade['initial_lot_size'] * (trade_cfg.get("TP1_PARTIAL_CLOSE_PERCENT", 50.0) / 100), 2)
-                
-                if self.connector.close_position(position, volume_to_close=lot_to_close, comment="TP1 Hit"):
-                    trade['lot_size'] = round(position.volume - lot_to_close, 2)
-                    trade['initial_lot_size'] = trade['lot_size'] # Cập nhật lại
-                    trade['tp1_hit'] = True
-                    if trade_cfg.get("TP1_MOVE_SL_TO_ENTRY", True):
-                        if self.connector.modify_position(trade['ticket_id'], trade['entry_price'], trade['tp_price']):
-                            trade['sl_price'] = trade['entry_price']
-                            logger.info(f"-> TP1: Đã dời SL của lệnh #{trade['ticket_id']} về điểm vào lệnh.")
-                    state_changed = True
-                continue
-
-            # 3. Logic Protect Profit (PP)
-            if (trade_cfg.get("ENABLE_PROTECT_PROFIT") and
-                not trade.get("pp_triggered") and
-                not trade.get("tp1_hit") and 
-                trade['peak_pnl_r'] >= trade_cfg.get("PP_MIN_PEAK_R_TRIGGER", 1.2) and
-                (trade['peak_pnl_r'] - pnl_r) >= trade_cfg.get("PP_DROP_R_TRIGGER", 0.4)):
-                
-                logger.warning(f"[ProtectProfit] Kích hoạt bảo vệ lợi nhuận cho lệnh #{trade['ticket_id']}!")
-                lot_to_close = round(trade['initial_lot_size'] * (trade_cfg.get("PP_PARTIAL_CLOSE_PERCENT", 50.0) / 100), 2)
-                
-                if self.connector.close_position(position, volume_to_close=lot_to_close, comment="PP Triggered"):
-                    trade['lot_size'] = round(position.volume - lot_to_close, 2)
-                    trade['initial_lot_size'] = trade['lot_size'] # Cập nhật lại
-                    trade['pp_triggered'] = True
-                    if trade_cfg.get("PP_MOVE_SL_TO_ENTRY", True):
-                        if self.connector.modify_position(trade['ticket_id'], trade['entry_price'], trade['tp_price']):
-                            trade['sl_price'] = trade['entry_price']
-                            logger.info(f"-> PP: Đã dời SL của lệnh #{trade['ticket_id']} về điểm vào lệnh.")
-                    state_changed = True
-                continue
-
-            # 4. Logic TSL (Dùng ATR của khung MAIN)
-            if trade_cfg.get("ENABLE_TSL") and can_check_score: # Tận dụng df_main đã tải
-                current_sl = trade.get('sl_price', 0)
-                atr_series = calculate_atr(df_main, self.config['ATR_PERIOD'])
-                if atr_series is None: continue
-                
-                current_atr = atr_series.iloc[-1]
-                trail_distance = current_atr * trade_cfg.get('TSL_ATR_MULTIPLIER', 2.5)
-                new_potential_sl = 0
-                
-                if is_long: new_potential_sl = current_price - trail_distance
-                else: new_potential_sl = current_price + trail_distance
-                    
-                should_modify = False
-                # Chỉ dời SL khi lợi nhuận (và TSL luôn dời về phía có lợi)
-                if is_long and new_potential_sl > max(current_sl, trade['entry_price']):
-                    should_modify = True
-                elif not is_long and new_potential_sl < min(current_sl, trade['entry_price']):
-                    should_modify = True
-
-                if should_modify:
-                    if self.connector.modify_position(trade['ticket_id'], new_potential_sl, trade['tp_price']):
-                        logger.info(f"✅ [TSL] Đã dời SL cho lệnh #{trade['ticket_id']} -> {new_potential_sl:.4f}")
-                        trade['sl_price'] = new_potential_sl
-                        state_changed = True
-
-        if state_changed:
-            save_state(self.state)
-
-    def scan_for_new_trades(self):
-        """
-        Quy trình quét và thực thi lệnh mới (Logic Vào Lệnh 3 Cấp).
-        Hàm này chỉ chạy 1 lần khi có nến mới.
-        """
-        
-        # 1. Kiểm tra điều kiện chung
-        if datetime.now() < self.cooldown_until:
-            logger.info(f"Bot đang trong thời gian cooldown. Chờ đến {self.cooldown_until.strftime('%H:%M:%S')}")
-            return
-        
-        if len(self.state.get('active_trades', [])) >= self.config['MAX_ACTIVE_TRADES']:
-            logger.info(f"Đã đạt số lệnh tối đa ({self.config['MAX_ACTIVE_TRADES']}). Không tìm lệnh mới.")
-            return
-
-        # 2. Lấy dữ liệu Đa Khung Thời Gian (MTF)
-        symbol = self.config['SYMBOL']
-        df_main = self.connector.get_historical_data(symbol, self.config['TIMEFRAME'], self.config['CANDLE_FETCH_COUNT'])
-        df_trend = self.connector.get_historical_data(symbol, self.config['TREND_TIMEFRAME'], self.config['CANDLE_FETCH_COUNT'])
-        
-        if df_main is None or df_main.empty or df_trend is None or df_trend.empty:
-            logger.warning(f"Không thể lấy đủ dữ liệu MTF cho {symbol}. Bỏ qua chu kỳ này.")
-            return
-        
-        # 3. Lấy điểm số (từ Bước 2)
-        final_long_score, final_short_score, score_details = get_final_signal(df_main, df_trend, self.config)
-
-        # 4. Triển khai Logic Vào Lệnh 3 Cấp
-        entry_levels = self.config.get('ENTRY_SCORE_LEVELS', [90.0, 120.0, 150.0])
-        signal = 0
-        score_level = 0
-        final_score = 0.0
-
-        if self.config.get('ENABLE_LONG_TRADES', True) and final_long_score > final_short_score and final_long_score >= entry_levels[0]:
-            signal = 1
-            final_score = final_long_score
-        elif self.config.get('ENABLE_SHORT_TRADES', True) and final_short_score > final_long_score and final_short_score >= entry_levels[0]:
-            signal = -1
-            final_score = final_short_score
-        
-        if signal == 0:
-            logger.info(f"Không có tín hiệu (Long: {final_long_score:.1f}, Short: {final_short_score:.1f}). Ngưỡng: {entry_levels[0]}")
-            return
-
-        # Xác định Cấp (Level) của tín hiệu
-        if final_score >= entry_levels[2]: score_level = 3
-        elif final_score >= entry_levels[1]: score_level = 2
-        else: score_level = 1
-        
-        signal_type = "LONG" if signal == 1 else "SHORT"
-        logger.info(f"✅ TÌM THẤY TÍN HIỆU {signal_type} [CẤP {score_level}]! (Điểm: {final_score:.2f}). Đang tính toán chi tiết...")
-        
-        # 5. Gọi Risk Manager 3 Cấp (từ Bước 3)
-        account_info = self.connector.get_account_info()
-        if not account_info:
-            logger.error("Không thể lấy thông tin tài khoản để tính toán rủi ro.")
-            return
-        
-        # Lấy giá vào lệnh (giá đóng cửa của nến tín hiệu)
-        entry_price = df_main['close'].iloc[-1]
-        
-        trade_details = calculate_trade_details(
-            df_main, entry_price, signal, account_info['equity'], self.config, score_level
+        # Khởi tạo RiskManager
+        self.risk_manager = RiskManager(
+            self.config,
+            self.mode,
+            self._get_current_capital, # Truyền hàm callback để lấy vốn
+            self.connector              # Truyền connector (chỉ dùng cho live)
         )
 
-        if trade_details is None:
-            logger.warning("❌ Tín hiệu không đủ điều kiện rủi ro (hoặc SL quá gần/xa). Lệnh bị hủy.")
+    # ==========================================================
+    # HÀM MỚI: ĐỐI CHIẾU TRẠNG THÁI (LUỒNG NHANH)
+    # ==========================================================
+    def reconcile_live_trades(self):
+        """
+        (Hàm cho Luồng 2 - Nhanh 5s)
+        Chỉ đối chiếu trạng thái lệnh trên Exness xem còn sống hay chết.
+        """
+        if self.mode != "live":
+            return
+
+        with self.lock:
+            try:
+                # 1. Lấy tất cả lệnh đang mở trên Exness
+                positions_on_exness = self.connector.get_all_open_positions()
+                
+                # Kiểm tra an toàn kết nối
+                if len(self.managed_trades) > 0 and len(positions_on_exness) == 0:
+                    if not self.connector.connect():
+                        logger.warning("[LIVE][RECONCILE] CẢNH BÁO: Mất kết nối. Bỏ qua đợt đối chiếu này.")
+                        return
+                
+                exness_positions_map = {
+                    p.ticket: p for p in positions_on_exness 
+                    if p.magic == self.MAGIC_NUMBER
+                }
+                
+                # 2. Đối chiếu với danh sách bot đang quản lý
+                managed_trades_copy = list(self.managed_trades)
+                state_changed = False
+                
+                for trade in managed_trades_copy:
+                    if trade["ticket"] not in exness_positions_map:
+                        logger.warning(f"[LIVE][RECONCILE] Lệnh {trade['ticket']} không còn trên sàn. Xóa khỏi quản lý.")
+                        self.managed_trades.remove(trade)
+                        state_changed = True
+                        # Kích hoạt Cooldown khi lệnh bị đóng
+                        self.last_trade_close_time_str = datetime.now().isoformat()
+
+                if state_changed:
+                    self._save_state()
+            
+            except Exception as e:
+                logger.error(f"[LIVE] Lỗi khi reconcile lệnh: {e}")
+
+    # ==========================================================
+    # LUỒNG LOGIC CHÍNH
+    # ==========================================================
+
+    def check_and_open_new_trade(self, data_h1: pd.DataFrame, data_m15: pd.DataFrame):
+        """
+        (Hàm cho Luồng 1 - Signal)
+        Kiểm tra tín hiệu và mở lệnh nếu thỏa mãn.
+        """
+        
+        # --- KIỂM TRA COOLDOWN ---
+        if self.last_trade_close_time_str:
+            try:
+                last_close_time = datetime.fromisoformat(self.last_trade_close_time_str)
+                cooldown_minutes = self.config.get("COOLDOWN_MINUTES", 60) 
+                cooldown_delta = timedelta(minutes=cooldown_minutes)
+                
+                current_time = None
+                if self.mode == "live":
+                    current_time = datetime.now()
+                else: # backtest
+                    current_time = data_m15.index[-1].to_pydatetime() 
+                
+                # Nếu chưa hết cooldown -> thoát
+                if current_time < (last_close_time + cooldown_delta):
+                    return
+                else:
+                    logger.info("Thời gian Cooldown đã kết thúc. Bắt đầu tìm tín hiệu trở lại.")
+                    self.last_trade_close_time_str = None
+                    if self.mode == "live": self._save_state()
+
+            except Exception as e:
+                logger.error(f"Lỗi khi xử lý Cooldown: {e}")
+                self.last_trade_close_time_str = None
+        
+        # 1. Kiểm tra điều kiện (max_trade)
+        if self._get_open_trade_count() >= self.max_trade:
+            return
+
+        # 2. Lấy tín hiệu
+        signal = get_signal(data_h1, data_m15, self.config) # "BUY", "SELL", None
+
+        # 3. Mở lệnh (Nếu có)
+        if signal:
+            try:
+                self.open_trade(signal, data_h1, data_m15)
+            except Exception as e:
+                logger.error(f"[{self.mode.upper()}] Lỗi khi thực thi open_trade ({signal}): {e}", exc_info=True)
+
+    
+    # --- (THAY ĐỔI) Sửa Lỗi 2 (Phần 3) ---
+    def open_trade(self, signal: str, data_h1: pd.DataFrame, data_m15: pd.DataFrame):
+        """(Hàm nội bộ) Thực thi logic mở lệnh."""
+        
+        with self.lock:
+            if self._get_open_trade_count() >= self.max_trade:
+                logger.warning(f"[{self.mode.upper()}] Bỏ qua tín hiệu {signal} do race condition, đã đủ lệnh.")
+                return
+            
+            logger.info(f"[{self.mode.upper()}] Nhận tín hiệu {signal}. Bắt đầu tính SL & Lot...")
+
+            try:
+                current_atr = calculate_atr(data_m15, self.atr_period).iloc[-1]
+                last_high, last_low = get_last_swing_points(data_m15, self.config)
+                
+                if pd.isna(current_atr) or last_high is None or last_low is None:
+                    logger.error("Thiếu dữ liệu (ATR/Swing) để tính SL. Bỏ qua lệnh.")
+                    return
+            except Exception as e:
+                logger.error(f"Lỗi lấy dữ liệu (ATR/Swing): {e}")
+                return
+
+            # Tính SL ban đầu
+            initial_sl_price = 0.0
+            if signal == "BUY":
+                initial_sl_price = last_low - (self.sl_atr_multiplier * current_atr)
+            else: # SELL
+                initial_sl_price = last_high + (self.sl_atr_multiplier * current_atr)
+
+            # [REFACTOR] Tính Lot Size - Gọi RiskManager
+            sim_entry_price = data_m15['close'].iloc[-1] 
+            
+            # (THAY ĐỔI) Nhận 3 giá trị, bao gồm adjusted_sl_price
+            lot_size, initial_risk_usd, adjusted_sl_price = self.risk_manager.calculate_lot_size_for_trade(
+                signal, data_h1, initial_sl_price, sim_entry_price
+            )
+            
+            if lot_size is None or lot_size <= 0:
+                logger.error(f"[{self.mode.upper()}] Tính toán Lot size thất bại hoặc bằng 0. Bỏ qua lệnh.")
+                return
+
+            # Thực thi Mở Lệnh
+            if self.mode == "live":
+                order_type = 0 if signal == "BUY" else 1
+                result = self.connector.place_order(
+                    symbol=self.SYMBOL, order_type=order_type, lot_size=lot_size,
+                    sl_price=adjusted_sl_price, tp_price=0.0, # (THAY ĐỔI) Dùng SL đã điều chỉnh
+                    magic_number=self.MAGIC_NUMBER, comment="finalplan_bot"
+                )
+                
+                if result and result.retcode == 10009: # DONE
+                    # (THAY ĐỔI) Tính 1R dựa trên SL đã điều chỉnh
+                    live_1R_usd = abs(self.connector.calculate_profit(
+                        self.SYMBOL, "LONG" if signal=="BUY" else "SELL", 
+                        lot_size, result.price, adjusted_sl_price 
+                    ))
+                    
+                    new_trade_state = {
+                        "ticket": result.order, "symbol": self.SYMBOL, "type": signal,
+                        "entry_price": result.price, 
+                        "initial_sl": adjusted_sl_price, # (THAY ĐỔI) Lưu SL thực tế
+                        "current_sl": adjusted_sl_price, # (THAY ĐỔI) Lưu SL thực tế
+                        "lot_size": lot_size,
+                        "magic": self.MAGIC_NUMBER, "initial_1R_usd": live_1R_usd,
+                        "is_BE_hit": False
+                    }
+                    self.managed_trades.append(new_trade_state)
+                    self._save_state()
+                    logger.info(f"+++ [LIVE] MỞ LỆNH {signal} thành công. Ticket: {result.order}")
+                else:
+                    logger.error(f"--- [LIVE] MỞ LỆNH {signal} thất bại. Retcode: {result.retcode if result else 'N/A'}")
+
+            else: # "backtest"
+                # (Không thay đổi) Backtest dùng initial_sl_price, 
+                # vì risk_manager trả về adjusted_sl_price == initial_sl_price
+                trade = SimTrade(data_m15.index[-1], sim_entry_price, signal,
+                                 lot_size, initial_sl_price, initial_risk_usd)
+                self.open_trades_sim.append(trade)
+                logger.info(f"+++ [BACKTEST] MỞ LỆNH {signal} @ {sim_entry_price:.5f}")
+    # --- (HẾT THAY ĐỔI) ---
+            
+    def update_all_trades(self, data_h1: pd.DataFrame, data_m15: pd.DataFrame):
+        """
+        (Hàm cho Luồng 2 - TSL)
+        Vòng lặp gọi hàm này mỗi nến M15 để quản lý TSL.
+        """
+        try:
+            current_atr = calculate_atr(data_m15, self.atr_period).iloc[-1]
+            last_high, last_low = get_last_swing_points(data_m15, self.config)
+            
+            # Tính ADX một lần ở đây
+            trend_adx_h1 = get_adx_value(data_h1, self.config) 
+            
+            if pd.isna(current_atr) or last_high is None or last_low is None or pd.isna(trend_adx_h1):
+                logger.warning("Thiếu dữ liệu (ATR/Swing/ADX) cho TSL. Bỏ qua.")
+                return
+        except Exception as e:
+            logger.error(f"Lỗi lấy dữ liệu TSL: {e}")
             return
             
-        lot_size, sl_price, tp_price = trade_details
+        if self.mode == "live":
+            self._live_update_tsl(data_h1, current_atr, last_high, last_low, trend_adx_h1)
+        else:
+            current_candle = data_m15.iloc[-1]
+            self._backtest_update_tsl(data_h1, current_atr, last_high, last_low, trend_adx_h1, current_candle)
+
+    # ==========================================================
+    # CÁC HÀM RIÊNG CỦA MODE "LIVE"
+    # ==========================================================
+
+    def _live_update_tsl(self, data_h1: pd.DataFrame, current_atr, last_high, last_low, trend_adx_h1):
+        """Logic TSL 3 chế độ cho chế độ LIVE."""
         
-        # 6. Đặt lệnh
-        order_type = mt5.ORDER_TYPE_BUY if signal == 1 else mt5.ORDER_TYPE_SELL
-        
-        # Tính toán rủi ro USD thực tế (để lưu lại)
-        risk_amount_usd = abs(self.connector.calculate_profit(symbol, "LONG" if signal == 1 else "SELL", lot_size, entry_price, sl_price) or 0.0)
+        with self.lock:
+            # 1. ĐỐI CHIẾU TRƯỚC
+            try:
+                positions_on_exness = self.connector.get_all_open_positions()
+                
+                if len(self.managed_trades) > 0 and len(positions_on_exness) == 0:
+                    if not self.connector.connect():
+                        logger.warning("[LIVE][TSL] Mất kết nối khi update TSL. Bỏ qua vòng này.")
+                        return
 
-        logger.info(f"Thông số lệnh Cấp {score_level}: Lot={lot_size:.2f}, SL={sl_price:.4f}, TP={tp_price:.4f}, Risk=${risk_amount_usd:.2f}")
-        logger.info("Đang gửi lệnh đến Exness...")
+                exness_positions_map = {
+                    p.ticket: p for p in positions_on_exness 
+                    if p.magic == self.MAGIC_NUMBER
+                }
+                
+                managed_trades_copy = list(self.managed_trades)
+                state_changed = False
+                
+                for trade in managed_trades_copy:
+                    if trade["ticket"] not in exness_positions_map:
+                        self.managed_trades.remove(trade)
+                        state_changed = True
+                        self.last_trade_close_time_str = datetime.now().isoformat()
 
-        result = self.connector.place_order(symbol, order_type, lot_size, sl_price, tp_price, self.config['MAGIC_NUMBER'], f"v6_L{score_level}_{signal_type}")
+                if state_changed: self._save_state()
+            
+            except Exception as e:
+                logger.error(f"[LIVE] Lỗi đối chiếu TSL: {e}")
+                return 
 
-        if result:
-            new_trade = {
-                "trade_id": str(uuid.uuid4()),
-                "ticket_id": result.order,
-                "symbol": symbol,
-                "type": signal_type,
-                "entry_price": result.price, 
-                "lot_size": result.volume,
-                "initial_lot_size": result.volume, # Lưu lot gốc để tính partial close
-                "sl_price": sl_price,
-                "tp_price": tp_price,
-                "entry_time": datetime.now().isoformat(),
-                "entry_score": final_score,         # <-- Lưu lại điểm vào lệnh
-                "score_level": score_level,         # <-- Lưu lại Cấp độ
-                "initial_risk_usd": risk_amount_usd,
-                "peak_pnl_r": 0.0,
-                "tp1_hit": False,
-                "pp_triggered": False
-            }
-            self.state.setdefault('active_trades', []).append(new_trade)
+            # 2. XỬ LÝ TSL & EMERGENCY EXIT
+            managed_trades_copy = list(self.managed_trades) 
+            
+            for trade in managed_trades_copy:
+                current_position = exness_positions_map.get(trade["ticket"])
+                if not current_position: continue 
+
+                # --- EMERGENCY EXIT ---
+                if self.config["USE_EMERGENCY_EXIT"]:
+                    try:
+                        trend_ema_h1 = check_trend_ema(data_h1, self.config)
+                        trend_st_h1 = get_supertrend_direction(data_h1, self.config)
+                        
+                        is_trend_broken = False
+                        if trade["type"] == "BUY" and (trend_ema_h1 == "DOWN" or trend_st_h1 == "DOWN"):
+                            is_trend_broken = True
+                        elif trade["type"] == "SELL" and (trend_ema_h1 == "UP" or trend_st_h1 == "UP"):
+                            is_trend_broken = True
+                            
+                        is_reversal_confirmed = (trend_adx_h1 >= self.config["ADX_MIN_LEVEL"])
+                        
+                        if is_trend_broken and is_reversal_confirmed:
+                            logger.warning(f"[LIVE][EMERGENCY EXIT] Đóng lệnh {trade['ticket']}")
+                            if self.connector.close_position(current_position, comment="emergency_exit_h1"):
+                                self.last_trade_close_time_str = datetime.now().isoformat()
+                            self.managed_trades.remove(trade)
+                            self._save_state()
+                            continue 
+                            
+                    except Exception as e:
+                        logger.error(f"[LIVE] Lỗi Emergency Exit: {e}")
+                        
+                # --- Bước 1: BE ---
+                if not trade["is_BE_hit"] and self.isMoveToBE_Enabled:
+                    live_profit_usd = current_position.profit
+                    target_profit_usd = trade["initial_1R_usd"] * self.tsl_trigger_R
+                    
+                    if live_profit_usd >= target_profit_usd:
+                        new_sl = 0.0
+                        if trade["type"] == "BUY":
+                            new_sl = trade["entry_price"] + (self.be_atr_buffer * current_atr)
+                        else: # SELL
+                            new_sl = trade["entry_price"] - (self.be_atr_buffer * current_atr)
+
+                        if (trade["type"] == "BUY" and new_sl > trade["current_sl"]) or \
+                           (trade["type"] == "SELL" and new_sl < trade["current_sl"]):
+                            
+                            if self.connector.modify_position(trade["ticket"], new_sl, 0.0):
+                                logger.info(f"[LIVE] TSL (BE): Dời SL lệnh {trade['ticket']} về {new_sl:.5f}")
+                                trade["current_sl"] = new_sl
+                                trade["is_BE_hit"] = True
+                                self._save_state()
+
+                # --- Bước 2: Trailing (Logic 3 chế độ) ---
+                if trade["is_BE_hit"] or not self.isMoveToBE_Enabled:
+                    
+                    new_sl = 0.0
+                    
+                    is_trending = trend_adx_h1 >= self.config["ADX_MIN_LEVEL"]
+                    tsl_mode = self.config.get("TSL_LOGIC_MODE", "STATIC")
+
+                    if trade["type"] == "BUY":
+                        if tsl_mode == "DYNAMIC":
+                            if not is_trending: # Sideways -> Chốt ngắn (Bám ĐỈNH)
+                                new_sl = last_high - (self.trail_atr_buffer * current_atr)
+                            else: # Trending -> Gồng lãi (Bám ĐÁY)
+                                new_sl = last_low - (self.trail_atr_buffer * current_atr)
+                        
+                        elif tsl_mode == "AGGRESSIVE":
+                            # Luôn chốt ngắn (Bám ĐỈNH)
+                            new_sl = last_high - (self.trail_atr_buffer * current_atr)
+                        
+                        else: # STATIC
+                            # Luôn gồng lãi (Bám ĐÁY)
+                            new_sl = last_low - (self.trail_atr_buffer * current_atr)
+                    
+                    else: # SELL
+                        if tsl_mode == "DYNAMIC":
+                            if not is_trending: # Sideways -> Chốt ngắn (Bám ĐÁY)
+                                new_sl = last_low + (self.trail_atr_buffer * current_atr)
+                            else: # Trending -> Gồng lãi (Bám ĐỈNH)
+                                new_sl = last_high + (self.trail_atr_buffer * current_atr)
+                        
+                        elif tsl_mode == "AGGRESSIVE":
+                            # Luôn chốt ngắn (Bám ĐÁY)
+                            new_sl = last_low + (self.trail_atr_buffer * current_atr)
+                        
+                        else: # STATIC
+                            # Luôn gồng lãi (Bám ĐỈNH)
+                            new_sl = last_high + (self.trail_atr_buffer * current_atr)
+                    
+                    if (trade["type"] == "BUY" and new_sl > trade["current_sl"]) or \
+                       (trade["type"] == "SELL" and new_sl < trade["current_sl"]):
+                        
+                        if self.connector.modify_position(trade["ticket"], new_sl, 0.0):
+                            logger.info(f"[LIVE] TSL (SWING): Dời SL lệnh {trade['ticket']} về {new_sl:.5f}")
+                            trade["current_sl"] = new_sl
+                            self._save_state()
+
+    def _save_state(self):
+        """Helper (LIVE): Lưu trạng thái vào JSON."""
+        if self.mode == "live":
+            self.state["active_trades"] = self.managed_trades
+            self.state["last_trade_close_time"] = self.last_trade_close_time_str
             save_state(self.state)
-            logger.info(f"✅ Lệnh #{result.order} đã được ghi vào bộ nhớ.")
 
-            # Kích hoạt Cooldown
-            timeframe_minutes = parse_timeframe_to_minutes(self.config['TIMEFRAME'])
-            cooldown_minutes = self.config.get('COOLDOWN_CANDLES', 3) * timeframe_minutes
-            self.cooldown_until = datetime.now() + timedelta(minutes=cooldown_minutes)
-            logger.info(f"Lệnh đã được đặt. Kích hoạt cooldown trong {cooldown_minutes} phút.")
+    # ==========================================================
+    # CÁC HÀM RIÊNG CỦA MODE "BACKTEST"
+    # ==========================================================
+
+    def _backtest_update_tsl(self, data_h1: pd.DataFrame, current_atr, last_high, last_low, trend_adx_h1, current_candle):
+        """Logic TSL 3 chế độ cho BACKTEST."""
+        
+        for i in range(len(self.open_trades_sim) - 1, -1, -1):
+            trade = self.open_trades_sim[i]
+            
+            # --- EMERGENCY EXIT ---
+            if self.config["USE_EMERGENCY_EXIT"]:
+                try:
+                    trend_ema_h1 = check_trend_ema(data_h1, self.config)
+                    trend_st_h1 = get_supertrend_direction(data_h1, self.config)
+                    
+                    is_trend_broken = False
+                    if trade.type == "BUY" and (trend_ema_h1 == "DOWN" or trend_st_h1 == "DOWN"):
+                        is_trend_broken = True
+                    elif trade.type == "SELL" and (trend_ema_h1 == "UP" or trend_st_h1 == "UP"):
+                        is_trend_broken = True
+                        
+                    is_reversal_confirmed = (trend_adx_h1 >= self.config["ADX_MIN_LEVEL"])
+                    
+                    if is_trend_broken and is_reversal_confirmed:
+                        logger.warning(f"[BACKTEST][EMERGENCY EXIT] Đóng lệnh {trade.type}")
+                        self._sim_close_trade(trade, current_candle.name, current_candle.close, "Emergency Exit")
+                        continue 
+                        
+                except Exception as e:
+                    logger.error(f"[BACKTEST] Lỗi Emergency Exit: {e}")
+
+            # 1. Check SL Hit
+            is_sl_hit = False
+            if trade.type == "BUY" and current_candle.low <= trade.current_sl:
+                is_sl_hit = True
+            elif trade.type == "SELL" and current_candle.high >= trade.current_sl:
+                is_sl_hit = True
+            
+            if is_sl_hit:
+                self._sim_close_trade(trade, current_candle.name, trade.current_sl, "SL/TSL Hit")
+                continue 
+
+            # 2. Cập nhật TSL
+            # --- Bước 1: BE ---
+            if not trade.is_BE_hit and self.isMoveToBE_Enabled:
+                current_profit = 0.0
+                if trade.type == "BUY":
+                    current_profit = (current_candle.high - trade.entry_price) * trade.lot_size * self.config["CONTRACT_SIZE"]
+                else: # SELL
+                    current_profit = (trade.entry_price - current_candle.low) * trade.lot_size * self.config["CONTRACT_SIZE"]
+                
+                target_profit_usd = trade.initial_1R_usd * self.tsl_trigger_R
+                
+                if current_profit >= target_profit_usd:
+                    new_sl = 0.0
+                    if trade.type == "BUY":
+                        new_sl = trade.entry_price + (self.be_atr_buffer * current_atr)
+                    else: # SELL
+                        new_sl = trade.entry_price - (self.be_atr_buffer * current_atr)
+                        
+                    if (trade.type == "BUY" and new_sl > trade.current_sl) or \
+                       (trade.type == "SELL" and new_sl < trade.current_sl):
+                        trade.current_sl = new_sl
+                        trade.is_BE_hit = True
+
+            # --- Bước 2: Trailing (Logic 3 chế độ) ---
+            if trade.is_BE_hit or not self.isMoveToBE_Enabled:
+                
+                new_sl = 0.0
+                
+                is_trending = trend_adx_h1 >= self.config["ADX_MIN_LEVEL"]
+                tsl_mode = self.config.get("TSL_LOGIC_MODE", "STATIC")
+
+                if trade.type == "BUY":
+                    if tsl_mode == "DYNAMIC":
+                        if not is_trending: # Sideways -> Chốt ngắn (Bám ĐỈNH)
+                            new_sl = last_high - (self.trail_atr_buffer * current_atr)
+                        else: # Trending -> Gồng lãi (Bám ĐÁY)
+                            new_sl = last_low - (self.trail_atr_buffer * current_atr)
+                    
+                    elif tsl_mode == "AGGRESSIVE":
+                        # Luôn chốt ngắn (Bám ĐỈNH)
+                        new_sl = last_high - (self.trail_atr_buffer * current_atr)
+                    
+                    else: # STATIC
+                        # Luôn gồng lãi (Bám ĐÁY)
+                        new_sl = last_low - (self.trail_atr_buffer * current_atr)
+                
+                else: # SELL
+                    if tsl_mode == "DYNAMIC":
+                        if not is_trending: # Sideways -> Chốt ngắn (Bám ĐÁY)
+                            new_sl = last_low + (self.trail_atr_buffer * current_atr)
+                        else: # Trending -> Gồng lãi (Bám ĐỈNH)
+                            new_sl = last_high + (self.trail_atr_buffer * current_atr)
+                    
+                    elif tsl_mode == "AGGRESSIVE":
+                        # Luôn chốt ngắn (Bám ĐÁY)
+                        new_sl = last_low + (self.trail_atr_buffer * current_atr)
+                    
+                    else: # STATIC
+                        # Luôn gồng lãi (Bám ĐỈNH)
+                        new_sl = last_high + (self.trail_atr_buffer * current_atr)
+
+                if (trade.type == "BUY" and new_sl > trade.current_sl) or \
+                   (trade.type == "SELL" and new_sl < trade.current_sl):
+                    trade.current_sl = new_sl
+
+    def _sim_close_trade(self, trade: SimTrade, close_time, close_price, reason: str):
+        """Helper (BACKTEST): Đóng lệnh."""
+        pnl_per_unit = (close_price - trade.entry_price) if trade.type == "BUY" else (trade.entry_price - close_price)
+        trade.pnl_usd = pnl_per_unit * trade.lot_size * self.config["CONTRACT_SIZE"]
+        
+        trade.close_time = close_time
+        trade.close_price = close_price
+        trade.close_reason = reason
+        
+        self.closed_trades_sim.append(trade)
+        if trade in self.open_trades_sim:
+            self.open_trades_sim.remove(trade)
+        
+        self.sim_capital += trade.pnl_usd
+        self.equity_curve.append(self.sim_capital)
+        
+        # Kích hoạt Cooldown cho Backtest
+        self.last_trade_close_time_str = trade.close_time.isoformat()
+
+        logger.info(f"--- [BACKTEST] ĐÓNG LỆNH {trade.type} ({reason}). PnL: ${trade.pnl_usd:,.2f}")
+        
+    def get_backtest_results_df(self) -> pd.DataFrame:
+        """Helper (BACKTEST): Xuất kết quả."""
+        if self.mode != "backtest": return pd.DataFrame()
+        trades_data = [vars(trade) for trade in self.closed_trades_sim]
+        if not trades_data: return pd.DataFrame()
+        return pd.DataFrame(trades_data)
+    
+    def _get_open_trade_count(self) -> int:
+        """Helper: Đếm số lệnh đang mở."""
+        if self.mode == "live":
+            with self.lock:
+                return len(self.managed_trades)
+        else:
+            return len(self.open_trades_sim)
+
+    # [MỚI] Hàm callback để lấy vốn
+    def _get_current_capital(self) -> float:
+        """
+        Helper: Trả về vốn hiện tại (live hoặc sim).
+        Hàm này được truyền cho RiskManager.
+        """
+        if self.mode == "live":
+            try:
+                info = self.connector.get_account_info()
+                balance = info.get('balance', self.config["BACKTEST_INITIAL_CAPITAL"])
+                return balance
+            except Exception as e:
+                logger.warning(f"[TradeManager] Không thể lấy balance live, dùng vốn default: {e}")
+                return self.config.get("BACKTEST_INITIAL_CAPITAL", 10000.0)
+        else: 
+            return self.sim_capital
