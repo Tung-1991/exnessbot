@@ -16,34 +16,34 @@ ALLOW_LONG_TRADES = True    # Cho phép lệnh Long
 ALLOW_SHORT_TRADES = True   # Cho phép lệnh Short
 
 # === 3. QUẢN LÝ VỐN & RỦI RO (RiskManager) ===
-BACKTEST_INITIAL_CAPITAL = 10000.0  # Vốn khởi điểm (Backtest)
+BACKTEST_INITIAL_CAPITAL = 1000.0  # Vốn khởi điểm (Backtest)
 RISK_MANAGEMENT_MODE = "FIXED_LOT"  # Chế độ QLV: "FIXED_LOT", "RISK_PERCENT", "DYNAMIC"
-fixed_lot = 1.0                     # Lô cố định (cho "FIXED_LOT" hoặc "DYNAMIC")
-RISK_PERCENT_PER_TRADE = 1.0        # % rủi ro/lệnh (cho "RISK_PERCENT" hoặc "DYNAMIC")
+fixed_lot = 5.0                     # Lô cố định (cho "FIXED_LOT" hoặc "DYNAMIC")
+RISK_PERCENT_PER_TRADE = 2.0        # % rủi ro/lệnh (cho "RISK_PERCENT" hoặc "DYNAMIC")
 
 # === 4. LỌC TREND (1H) ===
 USE_TREND_FILTER = True         # Bật/Tắt bộ lọc Trend 1H
 USE_SUPERTREND_FILTER = True    # Bật/Tắt lọc Supertrend
 USE_EMA_TREND_FILTER = True     # Bật/Tắt lọc EMA 50
-USE_ADX_FILTER = False          # Bật/Tắt lọc ADX (cho GĐ 1)
+USE_ADX_FILTER = True           # Bật/Tắt lọc ADX (cho GĐ 1)
 ADX_MIN_LEVEL = 20              # Ngưỡng ADX (phân biệt trend/sideways)
 
 # === 5. LỌC ENTRY (15M) Nến + volume  ===
-ENTRY_LOGIC_MODE = "BREAKOUT"   # Chế độ Entry: "BREAKOUT", "PULLBACK", "DYNAMIC"
+ENTRY_LOGIC_MODE = "DYNAMIC"   # Chế độ Entry: "BREAKOUT", "PULLBACK", "DYNAMIC"
 PULLBACK_CANDLE_PATTERN = "ENGULFING" # Mẫu nến đảo chiều Pullback 
 USE_CANDLE_FILTER = True        # Bật/Tắt lọc Nến (thân nến mạnh)
-min_body_percent = 60.0         # % thân nến tối thiểu
+min_body_percent = 50.0         # % thân nến tối thiểu
 USE_VOLUME_FILTER = True        # Bật/Tắt lọc Volume (đột biến)
 volume_ma_period = 20           # Chu kỳ VMA (cho Volume)
-volume_sd_multiplier = 1.0      # Hệ số nhân StdDev (cho Volume)
+volume_sd_multiplier = 0.5      # Hệ số nhân StdDev (cho Volume)
 
 
 # === 6. QUẢN LÝ LỆNH (SL/TSL/Exit) ===
 COOLDOWN_MINUTES = 1        # (Phút) Thời gian chờ giữa các lệnh
-USE_EMERGENCY_EXIT = False       # Bật/Tắt Thoát khẩn cấp (theo 1H)
+USE_EMERGENCY_EXIT = True       # Bật/Tắt Thoát khẩn cấp (theo 1H)
 
 # --- SL Ban đầu ---
-sl_atr_multiplier = 0.3       # Hệ số SL ban đầu (dựa trên ATR) + swingpoint
+sl_atr_multiplier = 0.2       # Hệ số SL ban đầu (dựa trên ATR) + swingpoint
 
 # --- Dời BE ---
 isMoveToBE_Enabled = True       # Bật/Tắt dời SL về hòa vốn (BE)
@@ -51,8 +51,8 @@ tsl_trigger_R = 1.0             # Kích hoạt dời BE khi đạt R:R
 be_atr_buffer = 0.8             # Hệ số SL dời BE (dựa trên ATR)
 
 # --- Trailing Stop (TSL) ---
-TSL_LOGIC_MODE = "STATIC"       # Chế độ TSL: "STATIC", "DYNAMIC", "AGGRESSIVE"
-trail_atr_buffer = 0.25         # Hệ số TSL (dựa trên ATR)
+TSL_LOGIC_MODE = "DYNAMIC"       # Chế độ TSL: "STATIC", "DYNAMIC", "AGGRESSIVE"
+trail_atr_buffer = 0.2         # Hệ số TSL (dựa trên ATR)
 
 # === 7. CHỈ BÁO (Periods) ===
 atr_period = 14                 # Chu kỳ ATR (cho SL/TSL)
