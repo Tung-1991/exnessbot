@@ -13,7 +13,8 @@ from core.storage_manager import load_state, save_state
 from core.risk_manager import RiskManager 
 
 # --- Import các file "Cảm biến" ---
-from signals.atr import calculate_atr
+# (NÂNG CẤP 1) Import hàm mới
+from signals.atr import calculate_atr, get_dynamic_atr_buffer 
 from signals.swing_point import get_last_swing_points
 from signals.signal_generator import get_signal
 from signals.adx import get_adx_value
@@ -41,7 +42,6 @@ class SimTrade:
         
         self.is_BE_hit = False 
         
-        # Thông tin khi đóng lệnh
         self.close_time = None
         self.close_price = None
         self.close_reason = None
@@ -56,6 +56,7 @@ class TradeManager:
     def __init__(self, config: Dict[str, Any], mode="live", initial_capital=10000.0):
         """
         Khởi tạo Trade Manager.
+        (NÂNG CẤP: Gộp 1, 2, 3)
         """
         self.config = config
         self.mode = mode
@@ -67,16 +68,24 @@ class TradeManager:
         self.SYMBOL = self.config["SYMBOL"]
         self.max_trade = self.config["max_trade"]
         
-        # SL/TSL Config
-        self.atr_period = self.config["atr_period"]
-        self.swing_period = self.config["swing_period"]
-        self.sl_atr_multiplier = self.config["sl_atr_multiplier"]
-        self.tsl_trigger_R = self.config["tsl_trigger_R"]
-        self.isMoveToBE_Enabled = self.config["isMoveToBE_Enabled"]
-        self.be_atr_buffer = self.config["be_atr_buffer"]
-        self.trail_atr_buffer = self.config["trail_atr_buffer"]
+        # SL/TSL Config (Gốc - Dùng làm fallback)
+        self.atr_period = self.config.get("atr_period", 14)
+        self.swing_period = self.config.get("swing_period", 5)
+        self.sl_atr_multiplier = self.config.get("sl_atr_multiplier", 0.2)
+        self.tsl_trigger_R = self.config.get("tsl_trigger_R", 1.0)
+        self.isMoveToBE_Enabled = self.config.get("isMoveToBE_Enabled", True)
+        self.be_atr_buffer = self.config.get("be_atr_buffer", 0.8)
+        self.trail_atr_buffer = self.config.get("trail_atr_buffer", 0.2)
         
         self.MAGIC_NUMBER = 12345 
+        
+        # --- (THÊM) Đọc Config Nâng cấp ---
+        self.USE_DYNAMIC_ATR_BUFFER = self.config.get("USE_DYNAMIC_ATR_BUFFER", False)
+        self.USE_ADX_GREY_ZONE = self.config.get("USE_ADX_GREY_ZONE", False)
+        self.ADX_WEAK = self.config.get("ADX_WEAK", 18)
+        self.ADX_STRONG = self.config.get("ADX_STRONG", 23)
+        self.ADX_MIN_LEVEL = self.config.get("ADX_MIN_LEVEL", 20)
+        # --- (HẾT THÊM) ---
 
         # Cấu hình theo Mode
         if self.mode == "live":
@@ -85,14 +94,13 @@ class TradeManager:
                 logger.critical("LỖI NGHIÊM TRỌNG: Không thể kết nối MT5 ở chế độ LIVE.")
                 raise ConnectionError("Không thể khởi tạo TradeManager ở chế độ LIVE.")
             
-            # Tải trạng thái (Xử lý mất kết nối)
             self.state = load_state()
             self.managed_trades = self.state.get("active_trades", [])
             self.last_trade_close_time_str = self.state.get("last_trade_close_time", None)
             logger.info(f"[LIVE] Đang quản lý {len(self.managed_trades)} lệnh (tải từ JSON).")
             
         else: # "backtest"
-            self.connector = None # Không cần connector cho backtest
+            self.connector = None
             self.open_trades_sim: List[SimTrade] = []
             self.closed_trades_sim: List[SimTrade] = []
             self.sim_capital = initial_capital
@@ -100,31 +108,25 @@ class TradeManager:
             self.last_trade_close_time_str = None
             logger.info(f"[BACKTEST] Khởi tạo với vốn $ {initial_capital:,.2f}")
 
-        # Khởi tạo RiskManager
         self.risk_manager = RiskManager(
             self.config,
             self.mode,
-            self._get_current_capital, # Truyền hàm callback để lấy vốn
-            self.connector              # Truyền connector (chỉ dùng cho live)
+            self._get_current_capital, 
+            self.connector              
         )
 
     # ==========================================================
     # HÀM MỚI: ĐỐI CHIẾU TRẠNG THÁI (LUỒNG NHANH)
     # ==========================================================
     def reconcile_live_trades(self):
-        """
-        (Hàm cho Luồng 2 - Nhanh 5s)
-        Chỉ đối chiếu trạng thái lệnh trên Exness xem còn sống hay chết.
-        """
+        """(Hàm cho Luồng 2 - Nhanh 5s)"""
         if self.mode != "live":
             return
 
         with self.lock:
             try:
-                # 1. Lấy tất cả lệnh đang mở trên Exness
                 positions_on_exness = self.connector.get_all_open_positions()
                 
-                # Kiểm tra an toàn kết nối
                 if len(self.managed_trades) > 0 and len(positions_on_exness) == 0:
                     if not self.connector.connect():
                         logger.warning("[LIVE][RECONCILE] CẢNH BÁO: Mất kết nối. Bỏ qua đợt đối chiếu này.")
@@ -135,7 +137,6 @@ class TradeManager:
                     if p.magic == self.MAGIC_NUMBER
                 }
                 
-                # 2. Đối chiếu với danh sách bot đang quản lý
                 managed_trades_copy = list(self.managed_trades)
                 state_changed = False
                 
@@ -144,7 +145,6 @@ class TradeManager:
                         logger.warning(f"[LIVE][RECONCILE] Lệnh {trade['ticket']} không còn trên sàn. Xóa khỏi quản lý.")
                         self.managed_trades.remove(trade)
                         state_changed = True
-                        # Kích hoạt Cooldown khi lệnh bị đóng
                         self.last_trade_close_time_str = datetime.now().isoformat()
 
                 if state_changed:
@@ -158,10 +158,7 @@ class TradeManager:
     # ==========================================================
 
     def check_and_open_new_trade(self, data_h1: pd.DataFrame, data_m15: pd.DataFrame):
-        """
-        (Hàm cho Luồng 1 - Signal)
-        Kiểm tra tín hiệu và mở lệnh nếu thỏa mãn.
-        """
+        """(Hàm cho Luồng 1 - Signal)"""
         
         # --- KIỂM TRA COOLDOWN ---
         if self.last_trade_close_time_str:
@@ -173,10 +170,9 @@ class TradeManager:
                 current_time = None
                 if self.mode == "live":
                     current_time = datetime.now()
-                else: # backtest
+                else: 
                     current_time = data_m15.index[-1].to_pydatetime() 
                 
-                # Nếu chưa hết cooldown -> thoát
                 if current_time < (last_close_time + cooldown_delta):
                     return
                 else:
@@ -188,14 +184,11 @@ class TradeManager:
                 logger.error(f"Lỗi khi xử lý Cooldown: {e}")
                 self.last_trade_close_time_str = None
         
-        # 1. Kiểm tra điều kiện (max_trade)
         if self._get_open_trade_count() >= self.max_trade:
             return
 
-        # 2. Lấy tín hiệu
-        signal = get_signal(data_h1, data_m15, self.config) # "BUY", "SELL", None
+        signal = get_signal(data_h1, data_m15, self.config) 
 
-        # 3. Mở lệnh (Nếu có)
         if signal:
             try:
                 self.open_trade(signal, data_h1, data_m15)
@@ -203,7 +196,6 @@ class TradeManager:
                 logger.error(f"[{self.mode.upper()}] Lỗi khi thực thi open_trade ({signal}): {e}", exc_info=True)
 
     
-    # --- (THAY ĐỔI) Sửa Lỗi 2 (Phần 3) ---
     def open_trade(self, signal: str, data_h1: pd.DataFrame, data_m15: pd.DataFrame):
         """(Hàm nội bộ) Thực thi logic mở lệnh."""
         
@@ -225,17 +217,26 @@ class TradeManager:
                 logger.error(f"Lỗi lấy dữ liệu (ATR/Swing): {e}")
                 return
 
-            # Tính SL ban đầu
+            # --- (NÂNG CẤP 1) Lấy Hệ số SL Động ---
+            sl_atr_mult = self.sl_atr_multiplier # Mặc định
+            if self.USE_DYNAMIC_ATR_BUFFER:
+                try:
+                    sl_atr_mult = get_dynamic_atr_buffer(current_atr, data_m15, self.config, "SL")
+                except Exception as e:
+                    logger.error(f"Lỗi get_dynamic_atr_buffer (SL): {e}. Dùng hệ số cố định.")
+                    sl_atr_mult = self.sl_atr_multiplier
+            # --- (HẾT NÂNG CẤP 1) ---
+
+            # Tính SL ban đầu (Kỹ thuật)
             initial_sl_price = 0.0
             if signal == "BUY":
-                initial_sl_price = last_low - (self.sl_atr_multiplier * current_atr)
+                initial_sl_price = last_low - (sl_atr_mult * current_atr)
             else: # SELL
-                initial_sl_price = last_high + (self.sl_atr_multiplier * current_atr)
+                initial_sl_price = last_high + (sl_atr_mult * current_atr)
 
-            # [REFACTOR] Tính Lot Size - Gọi RiskManager
             sim_entry_price = data_m15['close'].iloc[-1] 
             
-            # (THAY ĐỔI) Nhận 3 giá trị, bao gồm adjusted_sl_price
+            # (NÂNG CẤP 2) Gọi RiskManager (Đã bao gồm logic Max Loss SL)
             lot_size, initial_risk_usd, adjusted_sl_price = self.risk_manager.calculate_lot_size_for_trade(
                 signal, data_h1, initial_sl_price, sim_entry_price
             )
@@ -244,17 +245,15 @@ class TradeManager:
                 logger.error(f"[{self.mode.upper()}] Tính toán Lot size thất bại hoặc bằng 0. Bỏ qua lệnh.")
                 return
 
-            # Thực thi Mở Lệnh
             if self.mode == "live":
                 order_type = 0 if signal == "BUY" else 1
                 result = self.connector.place_order(
                     symbol=self.SYMBOL, order_type=order_type, lot_size=lot_size,
-                    sl_price=adjusted_sl_price, tp_price=0.0, # (THAY ĐỔI) Dùng SL đã điều chỉnh
-                    magic_number=self.MAGIC_NUMBER, comment="finalplan_bot"
+                    sl_price=adjusted_sl_price, tp_price=0.0, # (NÂNG CẤP 2) Dùng SL đã điều chỉnh
+                    magic_number=self.MAGIC_NUMBER, comment="finalplan_bot_v3"
                 )
                 
                 if result and result.retcode == 10009: # DONE
-                    # (THAY ĐỔI) Tính 1R dựa trên SL đã điều chỉnh
                     live_1R_usd = abs(self.connector.calculate_profit(
                         self.SYMBOL, "LONG" if signal=="BUY" else "SELL", 
                         lot_size, result.price, adjusted_sl_price 
@@ -263,8 +262,8 @@ class TradeManager:
                     new_trade_state = {
                         "ticket": result.order, "symbol": self.SYMBOL, "type": signal,
                         "entry_price": result.price, 
-                        "initial_sl": adjusted_sl_price, # (THAY ĐỔI) Lưu SL thực tế
-                        "current_sl": adjusted_sl_price, # (THAY ĐỔI) Lưu SL thực tế
+                        "initial_sl": adjusted_sl_price, # (NÂNG CẤP 2) Lưu SL thực tế
+                        "current_sl": adjusted_sl_price, # (NÂNG CẤP 2) Lưu SL thực tế
                         "lot_size": lot_size,
                         "magic": self.MAGIC_NUMBER, "initial_1R_usd": live_1R_usd,
                         "is_BE_hit": False
@@ -276,24 +275,17 @@ class TradeManager:
                     logger.error(f"--- [LIVE] MỞ LỆNH {signal} thất bại. Retcode: {result.retcode if result else 'N/A'}")
 
             else: # "backtest"
-                # (Không thay đổi) Backtest dùng initial_sl_price, 
-                # vì risk_manager trả về adjusted_sl_price == initial_sl_price
+                # (NÂNG CẤP 2) Backtest dùng SL đã điều chỉnh (từ RiskManager)
                 trade = SimTrade(data_m15.index[-1], sim_entry_price, signal,
-                                 lot_size, initial_sl_price, initial_risk_usd)
+                                 lot_size, adjusted_sl_price, initial_risk_usd)
                 self.open_trades_sim.append(trade)
                 logger.info(f"+++ [BACKTEST] MỞ LỆNH {signal} @ {sim_entry_price:.5f}")
-    # --- (HẾT THAY ĐỔI) ---
             
     def update_all_trades(self, data_h1: pd.DataFrame, data_m15: pd.DataFrame):
-        """
-        (Hàm cho Luồng 2 - TSL)
-        Vòng lặp gọi hàm này mỗi nến M15 để quản lý TSL.
-        """
+        """(Hàm cho Luồng 1 - Signal) Quản lý TSL."""
         try:
             current_atr = calculate_atr(data_m15, self.atr_period).iloc[-1]
             last_high, last_low = get_last_swing_points(data_m15, self.config)
-            
-            # Tính ADX một lần ở đây
             trend_adx_h1 = get_adx_value(data_h1, self.config) 
             
             if pd.isna(current_atr) or last_high is None or last_low is None or pd.isna(trend_adx_h1):
@@ -304,16 +296,18 @@ class TradeManager:
             return
             
         if self.mode == "live":
-            self._live_update_tsl(data_h1, current_atr, last_high, last_low, trend_adx_h1)
+            # (THAY ĐỔI) Truyền data_m15 cho Nâng cấp 1
+            self._live_update_tsl(data_h1, data_m15, current_atr, last_high, last_low, trend_adx_h1)
         else:
             current_candle = data_m15.iloc[-1]
-            self._backtest_update_tsl(data_h1, current_atr, last_high, last_low, trend_adx_h1, current_candle)
+            # (THAY ĐỔI) Truyền data_m15 cho Nâng cấp 1
+            self._backtest_update_tsl(data_h1, data_m15, current_atr, last_high, last_low, trend_adx_h1, current_candle)
 
     # ==========================================================
     # CÁC HÀM RIÊNG CỦA MODE "LIVE"
     # ==========================================================
 
-    def _live_update_tsl(self, data_h1: pd.DataFrame, current_atr, last_high, last_low, trend_adx_h1):
+    def _live_update_tsl(self, data_h1: pd.DataFrame, data_m15: pd.DataFrame, current_atr, last_high, last_low, trend_adx_h1):
         """Logic TSL 3 chế độ cho chế độ LIVE."""
         
         with self.lock:
@@ -346,6 +340,15 @@ class TradeManager:
                 logger.error(f"[LIVE] Lỗi đối chiếu TSL: {e}")
                 return 
 
+            # --- (NÂNG CẤP 3) Xác định Trạng thái ADX ---
+            adx_state = "STRONG" # Mặc định
+            if self.USE_ADX_GREY_ZONE:
+                if trend_adx_h1 < self.ADX_WEAK: adx_state = "WEAK"
+                elif trend_adx_h1 < self.ADX_STRONG: adx_state = "GREY"
+            else: # Dùng logic gốc
+                if trend_adx_h1 < self.ADX_MIN_LEVEL: adx_state = "WEAK"
+            # --- (HẾT NÂNG CẤP 3) ---
+
             # 2. XỬ LÝ TSL & EMERGENCY EXIT
             managed_trades_copy = list(self.managed_trades) 
             
@@ -365,7 +368,8 @@ class TradeManager:
                         elif trade["type"] == "SELL" and (trend_ema_h1 == "UP" or trend_st_h1 == "UP"):
                             is_trend_broken = True
                             
-                        is_reversal_confirmed = (trend_adx_h1 >= self.config["ADX_MIN_LEVEL"])
+                        # (NÂNG CẤP 3) Chỉ thoát khi ADX mạnh
+                        is_reversal_confirmed = (adx_state == "STRONG")
                         
                         if is_trend_broken and is_reversal_confirmed:
                             logger.warning(f"[LIVE][EMERGENCY EXIT] Đóng lệnh {trade['ticket']}")
@@ -384,11 +388,20 @@ class TradeManager:
                     target_profit_usd = trade["initial_1R_usd"] * self.tsl_trigger_R
                     
                     if live_profit_usd >= target_profit_usd:
+                        
+                        # (NÂNG CẤP 1) Lấy Hệ số BE Động
+                        be_atr_buf = self.be_atr_buffer
+                        if self.USE_DYNAMIC_ATR_BUFFER:
+                            try:
+                                be_atr_buf = get_dynamic_atr_buffer(current_atr, data_m15, self.config, "BE")
+                            except Exception as e:
+                                logger.error(f"Lỗi get_dynamic_atr_buffer (BE): {e}. Dùng hệ số cố định.")
+                        
                         new_sl = 0.0
                         if trade["type"] == "BUY":
-                            new_sl = trade["entry_price"] + (self.be_atr_buffer * current_atr)
+                            new_sl = trade["entry_price"] + (be_atr_buf * current_atr)
                         else: # SELL
-                            new_sl = trade["entry_price"] - (self.be_atr_buffer * current_atr)
+                            new_sl = trade["entry_price"] - (be_atr_buf * current_atr)
 
                         if (trade["type"] == "BUY" and new_sl > trade["current_sl"]) or \
                            (trade["type"] == "SELL" and new_sl < trade["current_sl"]):
@@ -402,40 +415,41 @@ class TradeManager:
                 # --- Bước 2: Trailing (Logic 3 chế độ) ---
                 if trade["is_BE_hit"] or not self.isMoveToBE_Enabled:
                     
+                    # (NÂNG CẤP 1) Lấy Hệ số TSL Động
+                    trail_atr_buf = self.trail_atr_buffer
+                    if self.USE_DYNAMIC_ATR_BUFFER:
+                        try:
+                            trail_atr_buf = get_dynamic_atr_buffer(current_atr, data_m15, self.config, "TSL")
+                        except Exception as e:
+                            logger.error(f"Lỗi get_dynamic_atr_buffer (TSL): {e}. Dùng hệ số cố định.")
+
                     new_sl = 0.0
                     
-                    is_trending = trend_adx_h1 >= self.config["ADX_MIN_LEVEL"]
+                    # (NÂNG CẤP 3) Dùng adx_state
+                    is_trending = (adx_state == "STRONG")
                     tsl_mode = self.config.get("TSL_LOGIC_MODE", "STATIC")
 
                     if trade["type"] == "BUY":
                         if tsl_mode == "DYNAMIC":
-                            if not is_trending: # Sideways -> Chốt ngắn (Bám ĐỈNH)
-                                new_sl = last_high - (self.trail_atr_buffer * current_atr)
+                            if not is_trending: # Sideways hoặc Grey Zone -> Chốt ngắn (Bám ĐỈNH)
+                                new_sl = last_high - (trail_atr_buf * current_atr)
                             else: # Trending -> Gồng lãi (Bám ĐÁY)
-                                new_sl = last_low - (self.trail_atr_buffer * current_atr)
-                        
+                                new_sl = last_low - (trail_atr_buf * current_atr)
                         elif tsl_mode == "AGGRESSIVE":
-                            # Luôn chốt ngắn (Bám ĐỈNH)
-                            new_sl = last_high - (self.trail_atr_buffer * current_atr)
-                        
+                            new_sl = last_high - (trail_atr_buf * current_atr)
                         else: # STATIC
-                            # Luôn gồng lãi (Bám ĐÁY)
-                            new_sl = last_low - (self.trail_atr_buffer * current_atr)
+                            new_sl = last_low - (trail_atr_buf * current_atr)
                     
                     else: # SELL
                         if tsl_mode == "DYNAMIC":
-                            if not is_trending: # Sideways -> Chốt ngắn (Bám ĐÁY)
-                                new_sl = last_low + (self.trail_atr_buffer * current_atr)
+                            if not is_trending: # Sideways hoặc Grey Zone -> Chốt ngắn (Bám ĐÁY)
+                                new_sl = last_low + (trail_atr_buf * current_atr)
                             else: # Trending -> Gồng lãi (Bám ĐỈNH)
-                                new_sl = last_high + (self.trail_atr_buffer * current_atr)
-                        
+                                new_sl = last_high + (trail_atr_buf * current_atr)
                         elif tsl_mode == "AGGRESSIVE":
-                            # Luôn chốt ngắn (Bám ĐÁY)
-                            new_sl = last_low + (self.trail_atr_buffer * current_atr)
-                        
+                            new_sl = last_low + (trail_atr_buf * current_atr)
                         else: # STATIC
-                            # Luôn gồng lãi (Bám ĐỈNH)
-                            new_sl = last_high + (self.trail_atr_buffer * current_atr)
+                            new_sl = last_high + (trail_atr_buf * current_atr)
                     
                     if (trade["type"] == "BUY" and new_sl > trade["current_sl"]) or \
                        (trade["type"] == "SELL" and new_sl < trade["current_sl"]):
@@ -456,8 +470,17 @@ class TradeManager:
     # CÁC HÀM RIÊNG CỦA MODE "BACKTEST"
     # ==========================================================
 
-    def _backtest_update_tsl(self, data_h1: pd.DataFrame, current_atr, last_high, last_low, trend_adx_h1, current_candle):
+    def _backtest_update_tsl(self, data_h1: pd.DataFrame, data_m15: pd.DataFrame, current_atr, last_high, last_low, trend_adx_h1, current_candle):
         """Logic TSL 3 chế độ cho BACKTEST."""
+        
+        # --- (NÂNG CẤP 3) Xác định Trạng thái ADX ---
+        adx_state = "STRONG" # Mặc định
+        if self.USE_ADX_GREY_ZONE:
+            if trend_adx_h1 < self.ADX_WEAK: adx_state = "WEAK"
+            elif trend_adx_h1 < self.ADX_STRONG: adx_state = "GREY"
+        else: # Dùng logic gốc
+            if trend_adx_h1 < self.ADX_MIN_LEVEL: adx_state = "WEAK"
+        # --- (HẾT NÂNG CẤP 3) ---
         
         for i in range(len(self.open_trades_sim) - 1, -1, -1):
             trade = self.open_trades_sim[i]
@@ -474,7 +497,8 @@ class TradeManager:
                     elif trade.type == "SELL" and (trend_ema_h1 == "UP" or trend_st_h1 == "UP"):
                         is_trend_broken = True
                         
-                    is_reversal_confirmed = (trend_adx_h1 >= self.config["ADX_MIN_LEVEL"])
+                    # (NÂNG CẤP 3) Chỉ thoát khi ADX mạnh
+                    is_reversal_confirmed = (adx_state == "STRONG")
                     
                     if is_trend_broken and is_reversal_confirmed:
                         logger.warning(f"[BACKTEST][EMERGENCY EXIT] Đóng lệnh {trade.type}")
@@ -507,11 +531,20 @@ class TradeManager:
                 target_profit_usd = trade.initial_1R_usd * self.tsl_trigger_R
                 
                 if current_profit >= target_profit_usd:
+                    
+                    # (NÂNG CẤP 1) Lấy Hệ số BE Động
+                    be_atr_buf = self.be_atr_buffer
+                    if self.USE_DYNAMIC_ATR_BUFFER:
+                        try:
+                            be_atr_buf = get_dynamic_atr_buffer(current_atr, data_m15, self.config, "BE")
+                        except Exception as e:
+                            logger.error(f"Lỗi get_dynamic_atr_buffer (BE): {e}. Dùng hệ số cố định.")
+
                     new_sl = 0.0
                     if trade.type == "BUY":
-                        new_sl = trade.entry_price + (self.be_atr_buffer * current_atr)
+                        new_sl = trade.entry_price + (be_atr_buf * current_atr)
                     else: # SELL
-                        new_sl = trade.entry_price - (self.be_atr_buffer * current_atr)
+                        new_sl = trade.entry_price - (be_atr_buf * current_atr)
                         
                     if (trade.type == "BUY" and new_sl > trade.current_sl) or \
                        (trade.type == "SELL" and new_sl < trade.current_sl):
@@ -521,40 +554,41 @@ class TradeManager:
             # --- Bước 2: Trailing (Logic 3 chế độ) ---
             if trade.is_BE_hit or not self.isMoveToBE_Enabled:
                 
+                # (NÂNG CẤP 1) Lấy Hệ số TSL Động
+                trail_atr_buf = self.trail_atr_buffer
+                if self.USE_DYNAMIC_ATR_BUFFER:
+                    try:
+                        trail_atr_buf = get_dynamic_atr_buffer(current_atr, data_m15, self.config, "TSL")
+                    except Exception as e:
+                        logger.error(f"Lỗi get_dynamic_atr_buffer (TSL): {e}. Dùng hệ số cố định.")
+                
                 new_sl = 0.0
                 
-                is_trending = trend_adx_h1 >= self.config["ADX_MIN_LEVEL"]
+                # (NÂNG CẤP 3) Dùng adx_state
+                is_trending = (adx_state == "STRONG")
                 tsl_mode = self.config.get("TSL_LOGIC_MODE", "STATIC")
 
                 if trade.type == "BUY":
                     if tsl_mode == "DYNAMIC":
-                        if not is_trending: # Sideways -> Chốt ngắn (Bám ĐỈNH)
-                            new_sl = last_high - (self.trail_atr_buffer * current_atr)
+                        if not is_trending: # Sideways hoặc Grey Zone -> Chốt ngắn (Bám ĐỈNH)
+                            new_sl = last_high - (trail_atr_buf * current_atr)
                         else: # Trending -> Gồng lãi (Bám ĐÁY)
-                            new_sl = last_low - (self.trail_atr_buffer * current_atr)
-                    
+                            new_sl = last_low - (trail_atr_buf * current_atr)
                     elif tsl_mode == "AGGRESSIVE":
-                        # Luôn chốt ngắn (Bám ĐỈNH)
-                        new_sl = last_high - (self.trail_atr_buffer * current_atr)
-                    
+                        new_sl = last_high - (trail_atr_buf * current_atr)
                     else: # STATIC
-                        # Luôn gồng lãi (Bám ĐÁY)
-                        new_sl = last_low - (self.trail_atr_buffer * current_atr)
+                        new_sl = last_low - (trail_atr_buf * current_atr)
                 
                 else: # SELL
                     if tsl_mode == "DYNAMIC":
-                        if not is_trending: # Sideways -> Chốt ngắn (Bám ĐÁY)
-                            new_sl = last_low + (self.trail_atr_buffer * current_atr)
+                        if not is_trending: # Sideways hoặc Grey Zone -> Chốt ngắn (Bám ĐÁY)
+                            new_sl = last_low + (trail_atr_buf * current_atr)
                         else: # Trending -> Gồng lãi (Bám ĐỈNH)
-                            new_sl = last_high + (self.trail_atr_buffer * current_atr)
-                    
+                            new_sl = last_high + (trail_atr_buf * current_atr)
                     elif tsl_mode == "AGGRESSIVE":
-                        # Luôn chốt ngắn (Bám ĐÁY)
-                        new_sl = last_low + (self.trail_atr_buffer * current_atr)
-                    
+                        new_sl = last_low + (trail_atr_buf * current_atr)
                     else: # STATIC
-                        # Luôn gồng lãi (Bám ĐỈNH)
-                        new_sl = last_high + (self.trail_atr_buffer * current_atr)
+                        new_sl = last_high + (trail_atr_buf * current_atr)
 
                 if (trade.type == "BUY" and new_sl > trade.current_sl) or \
                    (trade.type == "SELL" and new_sl < trade.current_sl):
@@ -576,7 +610,6 @@ class TradeManager:
         self.sim_capital += trade.pnl_usd
         self.equity_curve.append(self.sim_capital)
         
-        # Kích hoạt Cooldown cho Backtest
         self.last_trade_close_time_str = trade.close_time.isoformat()
 
         logger.info(f"--- [BACKTEST] ĐÓNG LỆNH {trade.type} ({reason}). PnL: ${trade.pnl_usd:,.2f}")
@@ -596,7 +629,6 @@ class TradeManager:
         else:
             return len(self.open_trades_sim)
 
-    # [MỚI] Hàm callback để lấy vốn
     def _get_current_capital(self) -> float:
         """
         Helper: Trả về vốn hiện tại (live hoặc sim).

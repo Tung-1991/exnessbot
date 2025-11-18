@@ -21,12 +21,22 @@ RISK_MANAGEMENT_MODE = "FIXED_LOT"  # Chế độ QLV: "FIXED_LOT", "RISK_PERCEN
 fixed_lot = 5.0                     # Lô cố định (cho "FIXED_LOT" hoặc "DYNAMIC")
 RISK_PERCENT_PER_TRADE = 2.0        # % rủi ro/lệnh (cho "RISK_PERCENT" hoặc "DYNAMIC")
 
+# --- (NÂNG CẤP 2) Bảo vệ vốn (Max Loss SL) ---
+USE_MAX_USD_SL_FOR_FIXED_LOT = False # Bật/Tắt SL tối đa (theo USD)
+MAX_USD_LOSS_PER_TRADE = 300.0      # Ngưỡng lỗ USD tối đa (chỉ cho FIXED_LOT)
+
 # === 4. LỌC TREND (1H) ===
 USE_TREND_FILTER = True         # Bật/Tắt bộ lọc Trend 1H
 USE_SUPERTREND_FILTER = True    # Bật/Tắt lọc Supertrend
 USE_EMA_TREND_FILTER = True     # Bật/Tắt lọc EMA 50
 USE_ADX_FILTER = True           # Bật/Tắt lọc ADX (cho GĐ 1)
-ADX_MIN_LEVEL = 20              # Ngưỡng ADX (phân biệt trend/sideways)
+ADX_MIN_LEVEL = 20              # Ngưỡng ADX (phân biệt trend/sideways) (Dùng nếu Vùng Xám TẮT)
+
+# --- (NÂNG CẤP 3) Vùng Xám ADX (ADX Grey Zone) ---
+USE_ADX_GREY_ZONE = False    # Bật/Tắt logic Vùng Xám
+ADX_WEAK = 18               # Ngưỡng DƯỚI Vùng Xám (ADX < 18 -> Sideways)
+ADX_STRONG = 23             # Ngưỡng TRÊN Vùng Xám (ADX > 23 -> Trend)
+                            # (Nếu ADX ở giữa 18-23 -> "Grey Zone" -> Thận trọng/Không vào lệnh)
 
 # === 5. LỌC ENTRY (15M) Nến + volume  ===
 ENTRY_LOGIC_MODE = "DYNAMIC"   # Chế độ Entry: "BREAKOUT", "PULLBACK", "DYNAMIC"
@@ -43,16 +53,22 @@ COOLDOWN_MINUTES = 1        # (Phút) Thời gian chờ giữa các lệnh
 USE_EMERGENCY_EXIT = True       # Bật/Tắt Thoát khẩn cấp (theo 1H)
 
 # --- SL Ban đầu ---
-sl_atr_multiplier = 0.2       # Hệ số SL ban đầu (dựa trên ATR) + swingpoint
+sl_atr_multiplier = 0.2       # Hệ số SL ban đầu (dựa trên ATR) + swingpoint (Dùng nếu Động TẮT)
 
 # --- Dời BE ---
 isMoveToBE_Enabled = True       # Bật/Tắt dời SL về hòa vốn (BE)
 tsl_trigger_R = 1.0             # Kích hoạt dời BE khi đạt R:R
-be_atr_buffer = 0.8             # Hệ số SL dời BE (dựa trên ATR)
+be_atr_buffer = 0.8             # Hệ số SL dời BE (dựa trên ATR) (Dùng nếu Động TẮT)
 
 # --- Trailing Stop (TSL) ---
 TSL_LOGIC_MODE = "DYNAMIC"       # Chế độ TSL: "STATIC", "DYNAMIC", "AGGRESSIVE"
-trail_atr_buffer = 0.2         # Hệ số TSL (dựa trên ATR)
+trail_atr_buffer = 0.2         # Hệ số TSL (dựa trên ATR) (Dùng nếu Động TẮT)
+
+# --- (NÂNG CẤP 1) Hệ số ATR Động (Dynamic ATR Buffer) ---
+USE_DYNAMIC_ATR_BUFFER = False   # Bật/Tắt Hệ số ATR "co dãn" (Tác động SL, BE, TSL)
+DYN_ATR_MA_PERIOD = 50          # Chu kỳ MA(ATR) để đo biến động (dài hạn)
+DYN_ATR_MIN_CAP_RATIO = 0.75    # Giới hạn co dãn (Dưới) (ví dụ: 0.75x)
+DYN_ATR_MAX_CAP_RATIO = 2.0     # Giới hạn co dãn (Trên) (ví dụ: 2.0x)
 
 # === 7. CHỈ BÁO (Periods) ===
 atr_period = 14                 # Chu kỳ ATR (cho SL/TSL)

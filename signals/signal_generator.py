@@ -5,14 +5,12 @@ import pandas as pd
 import logging
 from typing import Optional, Dict, Any
 
-# Import tất cả 7 file "cảm biến"
 from signals.supertrend import get_supertrend_direction
 from signals.ema import check_trend_ema, check_entry_ema_breakout, _calculate_ema
 from signals.adx import get_adx_value
 from signals.candle import get_candle_confirmation
 from signals.multi_candle import get_pullback_confirmation
 from signals.volume import get_volume_confirmation
-# (File atr.py và swing_point.py sẽ được dùng bởi core/trade_manager.py)
 
 logger = logging.getLogger("ExnessBot")
 
@@ -24,99 +22,124 @@ def get_signal(
     """
     Hàm "Bộ não" tổng hợp.
     Thực thi logic 3 bước trong codeplan.txt.
-
-    Args:
-        df_h1 (pd.DataFrame): DataFrame dữ liệu H1.
-        df_m15 (pd.DataFrame): DataFrame dữ liệu M15.
-        config (Dict[str, Any]): Đối tượng config.
-
-    Returns:
-        Optional[str]: "BUY", "SELL", hoặc None.
+    (NÂNG CẤP: ADX GREY ZONE)
     """
     
-    # Đọc config
+    # --- Đọc Config Cơ bản ---
     ALLOW_LONG_TRADES = config["ALLOW_LONG_TRADES"]
     ALLOW_SHORT_TRADES = config["ALLOW_SHORT_TRADES"]
     
     USE_TREND_FILTER = config["USE_TREND_FILTER"]
     USE_SUPERTREND_FILTER = config["USE_SUPERTREND_FILTER"]
     USE_EMA_TREND_FILTER = config["USE_EMA_TREND_FILTER"]
-    USE_ADX_FILTER = config["USE_ADX_FILTER"]
-    ADX_MIN_LEVEL = config["ADX_MIN_LEVEL"]
     
     ENTRY_LOGIC_MODE = config["ENTRY_LOGIC_MODE"]
     
     USE_CANDLE_FILTER = config["USE_CANDLE_FILTER"]
     USE_VOLUME_FILTER = config["USE_VOLUME_FILTER"]
+
+    # --- Đọc Config ADX (Gốc & Nâng cấp) ---
+    USE_ADX_FILTER = config["USE_ADX_FILTER"]
+    ADX_MIN_LEVEL = config.get("ADX_MIN_LEVEL", 20)
     
+    # (NÂNG CẤP) Đọc tham số Vùng Xám (với giá trị mặc định an toàn)
+    USE_ADX_GREY_ZONE = config.get("USE_ADX_GREY_ZONE", False)
+    ADX_WEAK = config.get("ADX_WEAK", 18)
+    ADX_STRONG = config.get("ADX_STRONG", 23)
+
     try:
         # --- BƯỚC 1: LỌC XU HƯỚNG (H1) ---
         final_trend = "SIDEWAYS"
         
-        # (NÂNG CẤP 2: Luôn tính ADX vì cần dùng cho logic DYNAMIC)
-        trend_adx_h1 = get_adx_value(df_h1, config) # float (ví dụ 25.5)
+        trend_adx_h1 = get_adx_value(df_h1, config) 
         
         if not USE_TREND_FILTER:
-            # Nếu tắt lọc, bot được phép trade cả hai hướng
             final_trend = "ANY"
         else:
-            # 1.1. Tính các cảm biến H1
-            trend_ema_h1 = check_trend_ema(df_h1, config) # "UP" / "DOWN"
-            trend_st_h1 = get_supertrend_direction(df_h1, config) # "UP" / "DOWN"
-            # (ADX đã tính ở trên)
+            trend_ema_h1 = check_trend_ema(df_h1, config)
+            trend_st_h1 = get_supertrend_direction(df_h1, config)
 
-            # 1.2. Tổng hợp kết quả H1
-            is_long_biased = True  # Mặc định cho phép Long
-            is_short_biased = True # Mặc định cho phép Short
+            is_long_biased = True
+            is_short_biased = True
 
-            # Check bộ lọc EMA
             if USE_EMA_TREND_FILTER and trend_ema_h1 == "DOWN":
                 is_long_biased = False
             if USE_EMA_TREND_FILTER and trend_ema_h1 == "UP":
                 is_short_biased = False
                 
-            # Check bộ lọc Supertrend
             if USE_SUPERTREND_FILTER and trend_st_h1 == "DOWN":
                 is_long_biased = False
             if USE_SUPERTREND_FILTER and trend_st_h1 == "UP":
                 is_short_biased = False
 
-            # 1.3. Áp dụng bộ lọc ADX
-            if USE_ADX_FILTER and trend_adx_h1 < ADX_MIN_LEVEL:
-                # ADX yếu -> Thị trường Sideways -> KHÓA cả hai chiều
-                is_long_biased = False
-                is_short_biased = False
+            # --- (THAY ĐỔI) 1.3. Áp dụng bộ lọc ADX (Logic Vùng Xám) ---
+            if USE_ADX_FILTER:
+                if USE_ADX_GREY_ZONE:
+                    # Logic Vùng Xám MỚI
+                    if trend_adx_h1 < ADX_WEAK:
+                        # Dưới vùng xám (Yếu) -> Sideways -> KHÓA
+                        is_long_biased = False
+                        is_short_biased = False
+                    elif trend_adx_h1 >= ADX_WEAK and trend_adx_h1 < ADX_STRONG:
+                        # Trong vùng xám (Thận trọng) -> KHÓA
+                        is_long_biased = False
+                        is_short_biased = False
+                    # else: (Trên ADX_STRONG) -> Trending -> Giữ nguyên bias
                 
-            # 1.4. Quyết định Trend cuối cùng
+                else:
+                    # Logic Gốc (Ngưỡng Cứng)
+                    if trend_adx_h1 < ADX_MIN_LEVEL:
+                        is_long_biased = False
+                        is_short_biased = False
+            # --- (HẾT THAY ĐỔI 1.3) ---
+                
             if is_long_biased and not is_short_biased:
                 final_trend = "UP"
             elif is_short_biased and not is_long_biased:
                 final_trend = "DOWN"
             else:
-                # (Cả hai cùng True (ví dụ EMA và ST ngược nhau)
-                # hoặc cả hai cùng False (do ADX))
                 final_trend = "SIDEWAYS"
 
         # --- BƯỚC 2: LỌC ENTRY (M15) ---
-        entry_signal = None # "BUY" or "SELL"
+        entry_signal = None 
         
-        # --- NÂNG CẤP 2: LOGIC DYNAMIC ENTRY ---
+        # --- (THAY ĐỔI) Logic DYNAMIC ENTRY (Logic Vùng Xám) ---
         if ENTRY_LOGIC_MODE == "DYNAMIC":
-            if trend_adx_h1 < ADX_MIN_LEVEL:
-                # ADX Thấp (Sideways) -> Dùng Logic "PULLBACK"
-                ema_21_m15 = _calculate_ema(df_m15, config["ENTRY_EMA_PERIOD"])
-                if ema_21_m15 is not None:
-                    entry_signal = get_pullback_confirmation(df_m15, ema_21_m15, config)
+            if USE_ADX_GREY_ZONE:
+                # Logic Vùng Xám MỚI
+                if trend_adx_h1 < ADX_WEAK:
+                    # 1. Dưới vùng xám (WEAK) -> Sideways -> Dùng PULLBACK
+                    ema_21_m15 = _calculate_ema(df_m15, config["ENTRY_EMA_PERIOD"])
+                    if ema_21_m15 is not None:
+                        entry_signal = get_pullback_confirmation(df_m15, ema_21_m15, config)
+                
+                elif trend_adx_h1 >= ADX_STRONG:
+                    # 2. Trên vùng xám (STRONG) -> Trending -> Dùng BREAKOUT
+                    breakout_signal = check_entry_ema_breakout(df_m15, config)
+                    if breakout_signal:
+                        candle_ok = True if not USE_CANDLE_FILTER else get_candle_confirmation(df_m15, config)
+                        volume_ok = True if not USE_VOLUME_FILTER else get_volume_confirmation(df_m15, config)
+                        if candle_ok and volume_ok:
+                            entry_signal = breakout_signal
+                
+                # 3. (Else: Trong Vùng Xám) -> Thận trọng -> entry_signal = None (Mặc định)
+
             else:
-                # ADX Cao (Trending) -> Dùng Logic "BREAKOUT"
-                breakout_signal = check_entry_ema_breakout(df_m15, config)
-                if breakout_signal:
-                    candle_ok = True if not USE_CANDLE_FILTER else get_candle_confirmation(df_m15, config)
-                    volume_ok = True if not USE_VOLUME_FILTER else get_volume_confirmation(df_m15, config)
-                    if candle_ok and volume_ok:
-                        entry_signal = breakout_signal
+                # Logic Gốc (Ngưỡng Cứng)
+                if trend_adx_h1 < ADX_MIN_LEVEL:
+                    ema_21_m15 = _calculate_ema(df_m15, config["ENTRY_EMA_PERIOD"])
+                    if ema_21_m15 is not None:
+                        entry_signal = get_pullback_confirmation(df_m15, ema_21_m15, config)
+                else:
+                    breakout_signal = check_entry_ema_breakout(df_m15, config)
+                    if breakout_signal:
+                        candle_ok = True if not USE_CANDLE_FILTER else get_candle_confirmation(df_m15, config)
+                        volume_ok = True if not USE_VOLUME_FILTER else get_volume_confirmation(df_m15, config)
+                        if candle_ok and volume_ok:
+                            entry_signal = breakout_signal
         
-        # --- Logic Gốc (Nếu không dùng DYNAMIC) ---
+        # --- (HẾT THAY ĐỔI DYNAMIC) ---
+
         elif ENTRY_LOGIC_MODE == "BREAKOUT":
             breakout_signal = check_entry_ema_breakout(df_m15, config)
             if breakout_signal:
@@ -132,28 +155,39 @@ def get_signal(
 
         # --- BƯỚC 3: QUYẾT ĐỊNH CUỐI CÙNG ---
         
-        # Check Lệnh Long
         if (final_trend == "UP" or final_trend == "ANY") and \
            entry_signal == "BUY" and ALLOW_LONG_TRADES:
             
-            # (Thêm log để biết mode nào đã kích hoạt)
-            entry_mode = "DYNAMIC_PULLBACK" if (ENTRY_LOGIC_MODE == "DYNAMIC" and trend_adx_h1 < ADX_MIN_LEVEL) else \
-                         "DYNAMIC_BREAKOUT" if (ENTRY_LOGIC_MODE == "DYNAMIC" and trend_adx_h1 >= ADX_MIN_LEVEL) else \
-                         ENTRY_LOGIC_MODE
+            # (THAY ĐỔI) Cập nhật logic log
+            entry_mode = ENTRY_LOGIC_MODE
+            if ENTRY_LOGIC_MODE == "DYNAMIC":
+                if USE_ADX_GREY_ZONE:
+                    if trend_adx_h1 < ADX_WEAK: entry_mode = "DYN_PULLBACK"
+                    elif trend_adx_h1 >= ADX_STRONG: entry_mode = "DYN_BREAKOUT"
+                else:
+                    if trend_adx_h1 < ADX_MIN_LEVEL: entry_mode = "DYN_PULLBACK"
+                    else: entry_mode = "DYN_BREAKOUT"
+            
             logger.info(f"TÍN HIỆU BUY MỚI: Trend H1={final_trend}, Entry M15={entry_mode}")
             return "BUY"
 
-        # Check Lệnh Short
         if (final_trend == "DOWN" or final_trend == "ANY") and \
            entry_signal == "SELL" and ALLOW_SHORT_TRADES:
             
-            entry_mode = "DYNAMIC_PULLBACK" if (ENTRY_LOGIC_MODE == "DYNAMIC" and trend_adx_h1 < ADX_MIN_LEVEL) else \
-                         "DYNAMIC_BREAKOUT" if (ENTRY_LOGIC_MODE == "DYNAMIC" and trend_adx_h1 >= ADX_MIN_LEVEL) else \
-                         ENTRY_LOGIC_MODE
+            # (THAY ĐỔI) Cập nhật logic log
+            entry_mode = ENTRY_LOGIC_MODE
+            if ENTRY_LOGIC_MODE == "DYNAMIC":
+                if USE_ADX_GREY_ZONE:
+                    if trend_adx_h1 < ADX_WEAK: entry_mode = "DYN_PULLBACK"
+                    elif trend_adx_h1 >= ADX_STRONG: entry_mode = "DYN_BREAKOUT"
+                else:
+                    if trend_adx_h1 < ADX_MIN_LEVEL: entry_mode = "DYN_PULLBACK"
+                    else: entry_mode = "DYN_BREAKOUT"
+            
             logger.info(f"TÍN HIỆU SELL MỚI: Trend H1={final_trend}, Entry M15={entry_mode}")
             return "SELL"
             
-        return None # Không có tín hiệu
+        return None 
 
     except Exception as e:
         logger.error(f"Lỗi nghiêm trọng trong Signal Generator: {e}", exc_info=True)
