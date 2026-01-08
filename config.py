@@ -65,7 +65,7 @@ TSL_LOGIC_MODE = "DYNAMIC"       # Chế độ TSL: "STATIC", "DYNAMIC", "AGGRES
 trail_atr_buffer = 0.2         # Hệ số TSL (dựa trên ATR) (Dùng nếu Động TẮT)
 
 # --- (NÂNG CẤP 1) Hệ số ATR Động (Dynamic ATR Buffer) ---
-USE_DYNAMIC_ATR_BUFFER = False   # Bật/Tắt Hệ số ATR "co dãn" (Tác động SL, BE, TSL)
+l = False   # Bật/Tắt Hệ số ATR "co dãn" (Tác động SL, BE, TSL)
 DYN_ATR_MA_PERIOD = 50          # Chu kỳ MA(ATR) để đo biến động (dài hạn)
 DYN_ATR_MIN_CAP_RATIO = 0.75    # Giới hạn co dãn (Dưới) (ví dụ: 0.75x)
 DYN_ATR_MAX_CAP_RATIO = 2.0     # Giới hạn co dãn (Trên) (ví dụ: 2.0x)
